@@ -1,0 +1,375 @@
+"use client";
+import { useState, useCallback, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
+import Link from "next/link";
+import { ExplainerResult, TaskType } from "@/lib/types";
+import { isMetricMissing, metricsForTask } from "@/lib/metrics";
+import RetryImage from "./RetryImage";
+
+interface Props {
+  result: ExplainerResult;
+  task: TaskType;
+  activeMetrics: string[];
+  metricWeights?: Record<string, number>;
+  modelName?: string;
+  dataUrl?: string | null;
+  isExpanded?: boolean;
+}
+
+const BAR_HEIGHTS = [45, 85, 35, 100, 60, 75, 40, 90, 55, 70];
+
+export default function ResultCard({ result, task, activeMetrics, metricWeights = {}, modelName, dataUrl, isExpanded }: Props) {
+  const [showZoom, setShowZoom] = useState(false);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  // The zoom overlay is portalled to <body>. It has to be: the card wrapper keeps a
+  // `transform` after its entry animation (fill-mode: both), which makes it the
+  // containing block for position:fixed children — so rendering the overlay in place
+  // would size it to the card and then clip it against the card's overflow-hidden.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  const dragRef = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
+
+  const zoomUrl = (task === "timeseries" && result.visualization_url)
+    ? result.visualization_url.replace(".png", "_expanded.png")
+    : result.visualization_url;
+
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    e.preventDefault();
+    setZoom((z) => Math.min(8, Math.max(0.5, z - e.deltaY * 0.001)));
+  }, []);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    dragRef.current = { startX: e.clientX, startY: e.clientY, panX: pan.x, panY: pan.y };
+  }, [pan]);
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    if (!dragRef.current) return;
+    setPan({
+      x: dragRef.current.panX + (e.clientX - dragRef.current.startX),
+      y: dragRef.current.panY + (e.clientY - dragRef.current.startY),
+    });
+  }, []);
+
+  const handleMouseUp = useCallback(() => { dragRef.current = null; }, []);
+  const [cardZoom, setCardZoom] = useState(1);
+  const [cardOrigin, setCardOrigin] = useState("center");
+  const [cardPan, setCardPan] = useState({ x: 0, y: 0 });
+  const cardDragRef = useRef<{ sx: number; sy: number; px: number; py: number } | null>(null);
+  const cardImgRef = useRef<HTMLDivElement>(null);
+
+  const getOriginFromEvent = (e: React.MouseEvent) => {
+    const rect = cardImgRef.current?.getBoundingClientRect();
+    if (!rect) return "center";
+    const x = ((e.clientX - rect.left) / rect.width) * 100;
+    const y = ((e.clientY - rect.top) / rect.height) * 100;
+    return `${x}% ${y}%`;
+  };
+
+  const handleCardClick = useCallback((e: React.MouseEvent) => {
+    setCardOrigin(getOriginFromEvent(e));
+    setCardZoom((z) => {
+      const next = Math.min(4, z + 0.5);
+      return next;
+    });
+  }, []);
+
+  const handleCardWheel = useCallback((e: React.WheelEvent) => {
+    e.stopPropagation();
+    const rect = cardImgRef.current?.getBoundingClientRect();
+    if (rect) {
+      const x = ((e.clientX - rect.left) / rect.width) * 100;
+      const y = ((e.clientY - rect.top) / rect.height) * 100;
+      setCardOrigin(`${x}% ${y}%`);
+    }
+    setCardZoom((z) => Math.min(4, Math.max(1, z - e.deltaY * 0.002)));
+  }, []);
+
+  const resetCardZoom = useCallback(() => { setCardZoom(1); setCardOrigin("center"); setCardPan({ x: 0, y: 0 }); }, []);
+
+  const isCompleted = result.status === "completed";
+  const isNotSupported = result.status === "not_supported";
+  const isFailed = result.status === "failed";
+  const isRunning = result.status === "running" || result.status === "pending";
+
+  // Every metric the backend computes for this task gets its own row. A metric the
+  // backend could not produce for this explainer counts as 0 and is flagged as such.
+  const metrics = metricsForTask(task).map((def) => ({
+    key: def.key,
+    label: def.label,
+    value: result[def.field] ?? 0,
+    missing: isMetricMissing(result, def),
+  }));
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden flex flex-col h-full">
+      {/* Zoom modal */}
+      {mounted && showZoom && zoomUrl && createPortal(
+        <div
+          className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center overflow-hidden"
+          onClick={() => { setShowZoom(false); setZoom(1); setPan({ x: 0, y: 0 }); }}
+          onWheel={handleWheel}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          onMouseLeave={handleMouseUp}
+          style={{ cursor: dragRef.current ? "grabbing" : "grab" }}
+        >
+          <button
+            onClick={(e) => { e.stopPropagation(); setShowZoom(false); setZoom(1); setPan({ x: 0, y: 0 }); }}
+            className="absolute top-4 right-4 text-white bg-black/40 hover:bg-black/60 rounded-full w-8 h-8 flex items-center justify-center transition-colors z-10"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+          <RetryImage
+            src={zoomUrl}
+            alt={result.display_name}
+            onMouseDown={handleMouseDown}
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+              transformOrigin: "center",
+              transition: dragRef.current ? "none" : "transform 0.1s",
+              maxWidth: "90vw",
+              maxHeight: "90vh",
+              objectFit: "contain",
+              userSelect: "none",
+            }}
+          />
+        </div>,
+        document.body
+      )}
+
+      {/* Text asks for a tall token heatmap but must still be allowed to shrink: with
+          flex-shrink-0 a fixed 380px pushed the metric rows past the bottom of the card,
+          where overflow-hidden simply cut them off. */}
+      <div className={`relative bg-gray-50 ${task === "text" ? "h-[380px] min-h-0" : "flex-shrink-0 flex-1 min-h-0"}`}>
+        {result.rank != null && (
+          <div className="absolute top-2 left-2 z-10 w-7 h-7 rounded-full bg-blue-600 text-white text-xs font-bold flex items-center justify-center shadow">
+            #{result.rank}
+          </div>
+        )}
+        {isCompleted && result.visualization_url && (
+          <>
+            <div
+              ref={cardImgRef}
+              className="w-full h-full overflow-hidden"
+              onClick={(e) => { if (!cardDragRef.current) handleCardClick(e); }}
+              onWheel={handleCardWheel}
+              onDoubleClick={(e) => { e.stopPropagation(); setShowZoom(true); setZoom(1); setPan({ x: 0, y: 0 }); resetCardZoom(); }}
+              onContextMenu={(e) => { e.preventDefault(); resetCardZoom(); }}
+              onMouseDown={(e) => {
+                if (cardZoom <= 1) return;
+                e.preventDefault();
+                cardDragRef.current = { sx: e.clientX, sy: e.clientY, px: cardPan.x, py: cardPan.y };
+              }}
+              onMouseMove={(e) => {
+                if (!cardDragRef.current) return;
+                setCardPan({
+                  x: cardDragRef.current.px + (e.clientX - cardDragRef.current.sx),
+                  y: cardDragRef.current.py + (e.clientY - cardDragRef.current.sy),
+                });
+              }}
+              onMouseUp={() => { cardDragRef.current = null; }}
+              onMouseLeave={() => { cardDragRef.current = null; }}
+              style={{ cursor: cardZoom > 1 ? (cardDragRef.current ? "grabbing" : "grab") : "zoom-in" }}
+            >
+              <RetryImage
+                src={result.visualization_url}
+                alt={result.display_name}
+                className="w-full h-full object-contain"
+                style={{
+                  transform: `translate(${cardPan.x}px, ${cardPan.y}px) scale(${cardZoom})`,
+                  transformOrigin: cardOrigin,
+                  transition: cardDragRef.current ? "none" : "transform 0.15s",
+                }}
+                draggable={false}
+              />
+            </div>
+            {/* Zoom indicator + reset */}
+            {cardZoom > 1 && (
+              <button
+                onClick={resetCardZoom}
+                className="absolute top-2 right-2 z-10 bg-black/50 hover:bg-black/70 text-white rounded-md px-1.5 py-0.5 text-[10px] font-mono transition-colors"
+                title="Reset zoom"
+              >
+                {Math.round(cardZoom * 100)}% ✕
+              </button>
+            )}
+            {/* Unified action buttons — all tasks */}
+            <div className="absolute bottom-2 right-2 flex items-center gap-1">
+              {/* Expand (full screen modal) */}
+              <button
+                onClick={() => { setShowZoom(true); setZoom(1); setPan({ x: 0, y: 0 }); }}
+                className="bg-white/90 hover:bg-white rounded-md p-1 text-gray-600 hover:text-blue-700 shadow-sm transition-colors"
+                title="Expand to full screen"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5v-4m0 4h-4m4 0l-5-5" />
+                </svg>
+              </button>
+              {/* Download */}
+              <a
+                href={task === "timeseries" ? result.visualization_url.replace(".png", "_bundle.zip") : (result.visualization_url ?? "")}
+                download={task === "timeseries" ? `${result.explainer_name}_attribution.zip` : `${result.explainer_name}_xai_result.png`}
+                className="bg-white/90 hover:bg-white rounded-md p-1 text-gray-600 hover:text-blue-700 shadow-sm transition-colors"
+                title={task === "timeseries" ? "Download ZIP (graphs + Excel)" : "Download image"}
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                </svg>
+              </a>
+            </div>
+          </>
+        )}
+        {isCompleted && task === "text" && result.token_attributions && (
+          <div className="absolute bottom-0 left-0 right-0 bg-white/90 p-2 max-h-[50%] overflow-y-auto">
+            <div className="flex flex-wrap gap-0.5">
+              {result.token_attributions.map((ta, i) => (
+                <span
+                  key={i}
+                  className="px-0.5 py-px rounded text-[10px]"
+                  style={{
+                    backgroundColor: `rgba(239, 68, 68, ${Math.min(ta.score, 1) * 0.7})`,
+                    color: ta.score > 0.5 ? "white" : "inherit",
+                  }}
+                  title={`${ta.token}: ${ta.score.toFixed(3)}`}
+                >
+                  {ta.token}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+        {isNotSupported && (
+          <div className="w-full h-full flex flex-col items-center justify-center text-gray-400 p-4">
+            <svg className="w-8 h-8 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+            </svg>
+            <span className="text-xs text-center font-medium text-red-500">Not Supported</span>
+          </div>
+        )}
+        {isFailed && (
+          <div className="w-full h-full flex flex-col items-center justify-center text-red-400 p-4">
+            <svg className="w-8 h-8 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+            <span className="text-xs text-center">Error</span>
+            {result.error_message && (
+              <span className="text-xs text-center text-gray-400 mt-1 line-clamp-2">{result.error_message}</span>
+            )}
+          </div>
+        )}
+        {isRunning && (
+          <div className="w-full h-full flex flex-col items-center justify-center gap-3 bg-gradient-to-b from-gray-50 to-blue-50">
+            {/* Triple concentric spinning rings */}
+            <div className="relative w-16 h-16 flex items-center justify-center">
+              <div
+                className="absolute inset-0 rounded-full border-2 border-transparent border-t-blue-200 border-r-blue-200 animate-spin"
+                style={{ animationDuration: "3s" }}
+              />
+              <div
+                className="absolute inset-[5px] rounded-full border-2 border-transparent border-t-blue-400 border-l-blue-400 animate-spin"
+                style={{ animationDuration: "1.5s", animationDirection: "reverse" }}
+              />
+              <div
+                className="absolute inset-[10px] rounded-full border-2 border-transparent border-t-blue-600 animate-spin"
+                style={{ animationDuration: "0.75s" }}
+              />
+              <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+            </div>
+
+            {/* Equalizer bars */}
+            <div className="flex items-end gap-px" style={{ height: "22px" }}>
+              {BAR_HEIGHTS.map((h, i) => (
+                <div
+                  key={i}
+                  className="w-1.5 rounded-t-sm animate-bounce"
+                  style={{
+                    height: `${h}%`,
+                    backgroundColor: `rgba(59, 130, 246, ${0.2 + i * 0.08})`,
+                    animationDelay: `${i * 65}ms`,
+                    animationDuration: `${520 + (i % 4) * 130}ms`,
+                  }}
+                />
+              ))}
+            </div>
+
+            {/* Real step from backend */}
+            <span className="text-[10px] font-mono text-blue-400 tracking-wide w-full text-center px-2">
+              {result.current_step ?? "Explaining..."}
+            </span>
+          </div>
+        )}
+      </div>
+
+      <div className="p-3 flex-shrink-0">
+        <div className="flex items-center justify-between gap-1">
+          <h4 className="text-base font-semibold text-gray-800 truncate">{result.display_name}</h4>
+          {isCompleted && modelName && dataUrl && (
+            <Link
+              href={(() => {
+                const p = new URLSearchParams({
+                  task, model: modelName,
+                  explainer: result.explainer_name,
+                  data_url: dataUrl,
+                  ...(result.visualization_url ? { viz_url: result.visualization_url } : {}),
+                  ...(result.mu_fidelity != null ? { mu_fidelity: String(result.mu_fidelity) } : {}),
+                  ...(result.abpc != null ? { abpc: String(result.abpc) } : {}),
+                  ...(result.sensitivity != null ? { sensitivity: String(result.sensitivity) } : {}),
+                  ...(result.complexity != null ? { complexity: String(result.complexity) } : {}),
+                });
+                return `/optimizer?${p.toString()}`;
+              })()}
+              title="Open in Optimizer"
+              prefetch={false}
+              className="flex-shrink-0 flex items-center gap-0.5 text-xs font-semibold text-white bg-blue-400 hover:bg-blue-300 active:translate-y-0.5 active:shadow-none rounded px-2 py-1 transition-all shadow-[0_3px_0_#3b82f6]"
+            >
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+              </svg>
+              Optimize
+            </Link>
+          )}
+        </div>
+        {isCompleted && (
+          <div className={`flex flex-col ${isExpanded ? "mt-1 gap-0.5" : "mt-2 gap-1"}`}>
+            {metrics.map((m) => {
+              const isRanked = activeMetrics.includes(m.key);
+              const total = Object.values(metricWeights).reduce((s, v) => s + v, 0);
+              const pct = isRanked && metricWeights[m.key] != null && total > 0
+                ? Math.round((metricWeights[m.key] / total) * 100)
+                : null;
+              return (
+                <div key={m.key} className={`flex items-center justify-between rounded-lg ${isExpanded ? "px-2 py-1" : "px-2.5 py-1.5"} ${isRanked ? "bg-gray-50 border border-gray-200" : "bg-white border border-gray-100"}`}>
+                  <p className={`flex items-center gap-1 font-medium ${isRanked ? "text-gray-700" : "text-gray-400"} ${isExpanded ? "text-sm" : "text-base"}`}>
+                    {m.label}
+                    <svg className={`w-4 h-4 flex-shrink-0 ${isRanked ? "text-gray-500" : "text-gray-300"}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19V5M5 12l7-7 7 7" />
+                    </svg>
+                    {pct !== null && (
+                      <span className="text-xs text-gray-400 font-normal">{pct}%</span>
+                    )}
+                  </p>
+                  <span
+                    className={`font-mono text-center py-0.5 rounded ${isExpanded ? "text-xs w-14" : "text-base w-20"} ${
+                      m.missing ? "text-gray-400 italic" : isRanked ? "text-gray-800 font-semibold" : "text-gray-300"
+                    }`}
+                    title={m.missing
+                      ? `${m.label} is not available for ${result.display_name} — counted as 0`
+                      : undefined}
+                  >
+                    {m.value.toFixed(3)}
+                    {m.missing && <span className="ml-0.5 not-italic text-[10px] align-super">n/a</span>}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
