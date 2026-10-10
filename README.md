@@ -1,5 +1,8 @@
 # XAI Demo Platform
 
+<img width="563" height="163" alt="image" src="https://github.com/user-attachments/assets/e07ecafa-5d7d-4827-ba5b-fc015625f3f7" />
+
+
 An interactive **Explainable AI (XAI)** demo platform supporting **Image Classification**, **Text Classification**, and **Time-Series Classification**.
 
 The platform enables users to upload data, select pre-trained models and XAI explainers, visualize attribution maps, and compare explanation quality using multiple evaluation metrics.
