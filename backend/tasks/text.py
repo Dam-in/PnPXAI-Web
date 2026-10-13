@@ -29,41 +29,37 @@ def _resolve_text_source(model_name: str, hf_id: str | None):
 _TEXT_MODELS = {
     "toxigen-bert": {
         "display_name": "BERT",
-        "description": "BERT fine-tuned on ToxiGen (ACL 2022) to rate toxicity severity "
-                       "on the dataset's own 1-5 annotator scale. Most ToxiGen statements "
-                       "carry no slur, so the attribution has to point at what makes an "
-                       "otherwise plain sentence harmful.",
+        "description": "BERT fine-tuned on ToxiGen (ACL 2022) to sort statements into the "
+                       "paper's three toxicity bands: less toxic, ambiguous, toxic. Most "
+                       "ToxiGen statements carry no slur, so the attribution has to point "
+                       "at what makes an otherwise plain sentence harmful.",
         # Built by backend/scripts/train_toxigen.py — it does not exist on the Hub, so
         # there is no remote to fall back to.
         "hf_id": None,
-        "num_labels": 5,
-        # Every word here is the paper's, not ours. Two distinct pieces of ToxiGen
-        # terminology are combined:
-        #  - the scale's endpoints, §4.1: annotators rate "potential harm on a 1-5 scale
-        #    with 1 being clearly benign and 5 indicating very offensive or abusive text";
-        #  - the bands, footnote 8: the paper bins that same scale into three named
-        #    classes — "scores <3: 'non-toxic', =3: 'ambiguous', >3: 'toxic'" — and
-        #    Figure 4 labels its y-axis with exactly those three ("non-toxic, toxic,
-        #    ambiguous"). So 2/3/4 are no longer bare numbers.
-        # One honest caveat: footnote 8 bins max(HARMFULIFAI, HARMFULIFHUMAN), whereas
-        # this model regresses toxicity_human alone. Same scale, same question, one of
-        # the two raters — the thresholds carry over, the aggregation does not.
+        "num_labels": 3,
+        # The paper's own bands, footnote 8: annotators rate harm on a 1-5 scale (§4.1),
+        # and the paper bins max(HARMFULIFAI, HARMFULIFHUMAN) as "scores <3: 'non-toxic',
+        # =3: 'ambiguous', >3: 'toxic'"; Figure 4 labels its y-axis with the same three.
+        # The model is trained on exactly that binning of the continuous score (see
+        # toxigen_data.to_label), not on a rounded one.
+        # The one departure in wording: the low band is shown as "LESS TOXIC", not the
+        # paper's "non-toxic". Those statements are rated lower on a harm scale, not
+        # certified harmless, and "non-toxic" overstated that.
         # Note "toxic/benign" elsewhere in the paper is the *generation* label of the
         # 274k prompts, a different thing from these annotator-derived bands.
         # This dict is what get_label_map() serves; config.id2label mirrors it but is
         # not read.
         "label_map": {
-            0: "1 — NON-TOXIC (clearly benign)",
-            1: "2 — NON-TOXIC",
-            2: "3 — AMBIGUOUS",
-            3: "4 — TOXIC",
-            4: "5 — TOXIC (very offensive or abusive)",
+            0: "LESS TOXIC",
+            1: "AMBIGUOUS",
+            2: "TOXIC",
         },
-        # One sample per severity level, all race-targeted and all free of slurs.
+        # One sample per 1-5 annotator level (the l<n> in the name), all race-targeted
+        # and slur-free: l1-l2 fall in the less-toxic band, l3 is ambiguous, l4-l5 toxic.
         "datasets": [
             "toxigen_l1_mexican.txt",
             "toxigen_l2_chinese.txt",
-            "toxigen_l3_latino.txt",
+            "toxigen_l3_black.txt",
             "toxigen_l4_middle_east.txt",
             "toxigen_l5_native_american.txt",
         ],

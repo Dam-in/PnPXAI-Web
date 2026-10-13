@@ -210,7 +210,7 @@ export default function Home() {
   };
 
   // Re-runs the same explanation, anchored on a different chained forecast window --
-  // triggered by clicking a window on the Input & Prediction chart. Reuses whatever
+  // triggered by clicking a window on the Input & Result chart. Reuses whatever
   // explainers/ranking metric the current job already ran, unlike EXPLAIN which
   // re-detects them, since the model and task haven't changed.
   // `null` means "no particular window" -- the Reset button -- which re-runs the default
@@ -334,6 +334,8 @@ export default function Home() {
                 predictions={job.predictions}
                 forecast={job.forecast}
                 task={job.task}
+                modelName={job.model_name}
+                dataName={dataName}
                 onWindowExplain={handleWindowExplain}
                 windowExplainDisabled={busy}
               />

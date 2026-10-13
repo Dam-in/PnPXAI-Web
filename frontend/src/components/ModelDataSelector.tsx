@@ -17,6 +17,11 @@ interface Props {
 }
 
 type Mode = "sample" | "custom";
+
+// Tasks whose Custom (upload / HuggingFace) mode is switched off: the tab is hidden and
+// only presets are offered. The custom flow below stays intact — drop a task from this
+// list to bring it back.
+const CUSTOM_DISABLED_TASKS: TaskType[] = ["text"];
 type Status = "idle" | "loading" | "success" | "error";
 
 // For image/text the URL box takes a HuggingFace model page. Time series accepts that too
@@ -128,6 +133,8 @@ export default function ModelDataSelector({ task, model, onModelSelect, onDataRe
   };
 
   const urlField = URL_FIELD[task];
+  const customEnabled = !CUSTOM_DISABLED_TASKS.includes(task);
+  const activeMode: Mode = customEnabled ? mode : "sample";
 
   const tabClass = (active: boolean) =>
     `flex-1 text-xs py-2 font-medium transition-colors ${
@@ -138,17 +145,20 @@ export default function ModelDataSelector({ task, model, onModelSelect, onDataRe
     <div>
       <label className="block text-base font-semibold text-gray-700 mb-1">Model &amp; Data</label>
       <div className="border border-gray-200 rounded-xl overflow-hidden">
-        <div className="flex bg-gray-50 border-b border-gray-200">
-          <button onClick={() => switchMode("sample")} disabled={disabled} className={tabClass(mode === "sample")}>
-            Sample
-          </button>
-          <button onClick={() => switchMode("custom")} disabled={disabled} className={tabClass(mode === "custom")}>
-            Custom
-          </button>
-        </div>
+        {/* A lone "Sample" tab would be noise, so without Custom the tab bar goes entirely. */}
+        {customEnabled && (
+          <div className="flex bg-gray-50 border-b border-gray-200">
+            <button onClick={() => switchMode("sample")} disabled={disabled} className={tabClass(activeMode === "sample")}>
+              Sample
+            </button>
+            <button onClick={() => switchMode("custom")} disabled={disabled} className={tabClass(activeMode === "custom")}>
+              Custom
+            </button>
+          </div>
+        )}
 
         <div className="bg-white p-3 space-y-3">
-          {mode === "sample" ? (
+          {activeMode === "sample" ? (
             <>
               <div className="space-y-1">
                 <p className="text-[11px] font-medium text-gray-500 uppercase">Model</p>

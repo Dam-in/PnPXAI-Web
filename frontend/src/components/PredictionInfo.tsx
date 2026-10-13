@@ -1,5 +1,6 @@
 "use client";
-import { ForecastInfo, PredictionItem, TaskType } from "@/lib/types";
+import { ForecastInfo, ModelInfo, PredictionItem, TaskType } from "@/lib/types";
+import { getModels } from "@/lib/api";
 import { useEffect, useMemo, useRef, useState } from "react";
 import RetryImage from "./RetryImage";
 
@@ -8,6 +9,11 @@ interface Props {
   predictions: PredictionItem[] | null;
   forecast?: ForecastInfo | null;
   task: TaskType;
+  // The job's model id; looked up in the task's preset list for the header. Custom
+  // (uploaded / Hub) models aren't in that list and fall back to the raw id.
+  modelName: string;
+  // Sample file the input came from, if any (typed text has none).
+  dataName?: string | null;
   // Time-series only: clicking a chained forecast window re-runs the explanation
   // anchored on that window's own input instead of the default (earliest) one.
   // null clears the selection and brings the whole chain back (the Reset button).
@@ -45,8 +51,8 @@ function formatAxisValue(v: number): string {
   return v.toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
-// Ordinal labels lead with their own level ("1 — NON-TOXIC (clearly benign)", ...,
-// "5 — TOXIC (very offensive or abusive)"). Where every label carries a distinct
+// Ordinal labels lead with their own level ("1 — MILD", ..., "5 — SEVERE (abusive)").
+// Where every label carries a distinct
 // leading integer, the rows can be laid
 // out along the scale instead of by probability, which is what makes "the model is torn
 // between 4 and 5" visible at a glance. Returns null for anything else — POSITIVE/NEGATIVE,
@@ -61,8 +67,21 @@ function ordinalLevels(items: PredictionItem[]): number[] | null {
   return levels;
 }
 
+// The toxicity preset's classes are named bands with no leading number (backend
+// tasks/text.py label_map), listed here mildest first so they can sit on the same block
+// strip as a numbered scale. Must match the backend strings exactly; anything else falls
+// back to the probability-sorted bars, so a mismatch degrades instead of breaking.
+const NAMED_SCALE = ["LESS TOXIC", "AMBIGUOUS", "TOXIC"];
+
+function namedScaleLevels(items: PredictionItem[]): number[] | null {
+  const levels = items.map((p) => NAMED_SCALE.indexOf(p.class_name.trim()) + 1);
+  if (levels.some((n) => n === 0)) return null;
+  if (new Set(levels).size !== levels.length) return null;
+  return levels;
+}
+
 // The band a level belongs to, read off the label itself so the frontend invents no
-// vocabulary: "4 — TOXIC" -> "TOXIC", "1 — NON-TOXIC (clearly benign)" -> "NON-TOXIC".
+// vocabulary: "4 — SEVERE" -> "SEVERE", "1 — MILD (clearly benign)" -> "MILD".
 // The parenthetical gloss is dropped (it survives in the box's title tooltip), and a
 // bare-number label yields "" so the box just shows its level.
 function bandName(className: string): string {
@@ -491,7 +510,59 @@ function ForecastChart({
   );
 }
 
-export default function PredictionInfo({ dataUrl, predictions, forecast, task, onWindowExplain, windowExplainDisabled }: Props) {
+const SECTION_LABEL = "text-xs font-semibold text-gray-600 uppercase tracking-wide";
+
+// Header of the panel: which model produced the Input/Output below it.
+function ModelHeader({ task, modelName, dataName }: { task: TaskType; modelName: string; dataName?: string | null }) {
+  const [models, setModels] = useState<ModelInfo[] | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    getModels(task).then((m) => alive && setModels(m)).catch(() => alive && setModels([]));
+    return () => { alive = false; };
+  }, [task]);
+
+  const info = models?.find((m) => m.name === modelName);
+  // Hold the name back until the list arrives, so a preset doesn't flash its raw id first.
+  const title = info?.display_name ?? (models ? modelName : "");
+  const isCustom = models !== null && !info;
+
+  return (
+    <div className="flex items-center gap-3 pb-3 mb-3 border-b border-gray-100">
+      <div className="w-8 h-8 flex-shrink-0 rounded-lg bg-gradient-to-br from-blue-500 to-indigo-500 text-white flex items-center justify-center shadow-sm">
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden>
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75}
+            d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
+        </svg>
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mr-0.5">Model</span>
+          <h3 className="text-base font-semibold text-gray-800 truncate">{title || "\u00a0"}</h3>
+          {isCustom && (
+            <span className="text-[11px] font-semibold px-2 py-0.5 rounded-md border bg-amber-50 text-amber-600 border-amber-200">
+              Custom
+            </span>
+          )}
+        </div>
+      </div>
+      {dataName && (
+        <span
+          className="flex-shrink-0 max-w-[16rem] inline-flex items-center gap-1.5 rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-xs text-gray-600"
+          title={dataName}
+        >
+          <svg className="w-3.5 h-3.5 flex-shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden>
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+              d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+          <span className="truncate font-medium">{dataName}</span>
+        </span>
+      )}
+    </div>
+  );
+}
+
+export default function PredictionInfo({ dataUrl, predictions, forecast, task, modelName, dataName, onWindowExplain, windowExplainDisabled }: Props) {
   const [textContent, setTextContent] = useState<string | null>(null);
 
   useEffect(() => {
@@ -500,17 +571,26 @@ export default function PredictionInfo({ dataUrl, predictions, forecast, task, o
     }
   }, [task, dataUrl]);
 
+  // Image and text get labelled Input / Output columns with a divider between them.
+  // Time-series keeps its own layout: there the forecast chart is input and output at once.
+  const split = task !== "timeseries";
+
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-200 px-4 py-3">
-      <h3 className="text-base font-semibold text-gray-700 mb-2">Input & Prediction</h3>
+      <ModelHeader task={task} modelName={modelName} dataName={dataName} />
       <div className={`flex gap-4 ${task === "timeseries" && forecast ? "flex-col" : ""}`}>
         {/* Original data display */}
-        {task === "image" && dataUrl && (
-          <RetryImage src={dataUrl} alt="Original" className="max-h-40 w-40 flex-shrink-0 rounded-lg object-contain border" />
-        )}
-        {task === "text" && (
-          <div className="max-h-40 w-56 overflow-y-auto rounded-lg border bg-gray-50 p-2.5 text-sm text-gray-800 flex-shrink-0">
-            {textContent || "Loading..."}
+        {split && (task === "text" || dataUrl) && (
+          <div className={`space-y-1.5 ${task === "text" ? "w-1/2 min-w-0" : "flex-shrink-0"}`}>
+            <p className={SECTION_LABEL}>Input</p>
+            {task === "image" && dataUrl && (
+              <RetryImage src={dataUrl} alt="Original" className="h-56 w-80 rounded-lg object-contain border bg-gray-50" />
+            )}
+            {task === "text" && (
+              <div className="max-h-40 w-full overflow-y-auto rounded-lg border bg-gray-50 p-2.5 text-sm text-gray-800">
+                {textContent || "Loading..."}
+              </div>
+            )}
           </div>
         )}
         {task === "timeseries" &&
@@ -526,9 +606,11 @@ export default function PredictionInfo({ dataUrl, predictions, forecast, task, o
 
         {/* Predictions */}
         {predictions && predictions.length > 0 && (() => {
-          const showAll = predictions.length <= FULL_LIST_MAX;
+          // Image classes are an unordered top-k out of 1000, so only the leaders matter.
+          const showAll = task !== "image" && predictions.length <= FULL_LIST_MAX;
           const shown = showAll ? predictions : predictions.slice(0, 3);
-          const levels = showAll ? ordinalLevels(shown) : null;
+          const numbered = showAll ? ordinalLevels(shown) : null;
+          const levels = numbered ?? (showAll ? namedScaleLevels(shown) : null);
           const ordered = levels
             ? shown
                 .map((p, i) => ({ p, level: levels[i] }))
@@ -540,10 +622,17 @@ export default function PredictionInfo({ dataUrl, predictions, forecast, task, o
           const topIdx = rows.reduce(
             (best, p, i) => (p.probability > rows[best].probability ? i : best), 0);
           return (
-            <div className="flex-1 space-y-1.5">
-              <p className="text-xs font-medium text-gray-500 uppercase">
-                {showAll ? "Predictions" : "Top-3 Predictions"}
-              </p>
+            <div className={`flex-1 min-w-0 flex flex-col gap-1.5 ${split ? "border-l border-gray-200 pl-4" : ""}`}>
+              {split ? (
+                <p className={SECTION_LABEL}>
+                  Output
+                  {!showAll && <span className="ml-1.5 font-normal normal-case text-gray-400">top-3 predictions</span>}
+                </p>
+              ) : (
+                <p className="text-xs font-medium text-gray-500 uppercase">
+                  {showAll ? "Predictions" : "Top-3 Predictions"}
+                </p>
+              )}
               {levels ? (
                 // A scale is a scale: laying the levels out left-to-right as one strip
                 // reads as "where on 1-5 does this sit", which stacked bars never did.
@@ -561,14 +650,74 @@ export default function PredictionInfo({ dataUrl, predictions, forecast, task, o
                         className="rounded-lg border px-1 py-1.5 text-center transition-colors"
                         style={levelBoxStyle(f, pred.probability, i === topIdx)}
                       >
-                        <div className="text-base font-bold leading-none">{level}</div>
-                        {band && (
-                          <div className="mt-1 text-[8px] font-semibold uppercase leading-tight break-words opacity-90">
-                            {band}
-                          </div>
+                        {numbered ? (
+                          <>
+                            <div className="text-base font-bold leading-none">{level}</div>
+                            {band && (
+                              <div className="mt-1 text-[8px] font-semibold uppercase leading-tight break-words opacity-90">
+                                {band}
+                              </div>
+                            )}
+                            <div className="mt-1 text-[11px] font-semibold tabular-nums leading-none">
+                              {pred.probability.toFixed(1)}%
+                            </div>
+                          </>
+                        ) : (
+                          // A named band has no number to lead with, so the name takes the
+                          // top line and the probability gets the big type instead.
+                          <>
+                            <div className="text-[10px] font-semibold uppercase leading-tight break-words">
+                              {pred.class_name}
+                            </div>
+                            <div className="mt-1 text-base font-bold tabular-nums leading-none">
+                              {pred.probability.toFixed(1)}%
+                            </div>
+                          </>
                         )}
-                        <div className="mt-1 text-[11px] font-semibold tabular-nums leading-none">
-                          {pred.probability.toFixed(1)}%
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : task === "image" ? (
+                // Ranked cards rather than bars: with only the leaders out of 1000 shown,
+                // the bars' length mostly read as "small" for everything below #1.
+                // flex-1 stretches the row to the input image's height. Cards stay white
+                // with dark text; colour marks only the top pick and the probability bar.
+                <div
+                  className="flex-1 grid gap-2"
+                  style={{ gridTemplateColumns: `repeat(${rows.length}, minmax(0, 1fr))` }}
+                >
+                  {rows.map((pred, i) => {
+                    const top = i === topIdx;
+                    return (
+                      <div
+                        key={i}
+                        title={pred.class_name}
+                        className={`flex flex-col rounded-xl bg-white p-3 ${
+                          top ? "border-2 border-blue-500 shadow-sm" : "border border-gray-200"
+                        }`}
+                      >
+                        <span
+                          className={`self-start rounded-md px-1.5 py-0.5 text-[11px] font-bold leading-none ${
+                            top ? "bg-blue-500 text-white" : "bg-gray-100 text-gray-500"
+                          }`}
+                        >
+                          #{i + 1}
+                        </span>
+                        <div className="mt-2 text-base font-semibold leading-snug text-gray-800 line-clamp-2 break-words">
+                          {pred.class_name}
+                        </div>
+                        <div className="mt-auto pt-2">
+                          <div className={`text-2xl font-bold tabular-nums leading-none ${top ? "text-blue-600" : "text-gray-700"}`}>
+                            {pred.probability.toFixed(1)}
+                            <span className="ml-0.5 text-sm font-semibold text-gray-400">%</span>
+                          </div>
+                          <div className="mt-2 h-1.5 rounded-full bg-gray-100 overflow-hidden">
+                            <div
+                              className={`h-full rounded-full ${top ? "bg-blue-500" : "bg-gray-400"}`}
+                              style={{ width: `${Math.min(pred.probability, 100)}%` }}
+                            />
+                          </div>
                         </div>
                       </div>
                     );

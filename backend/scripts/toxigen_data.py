@@ -30,7 +30,10 @@ _SPLITS = {"train": f"{_BASE}/train/0000.parquet", "test": f"{_BASE}/test/0000.p
 
 CACHE_DIR = os.path.join("sample_data", ".cache", "toxigen")
 
-NUM_CLASSES = 5
+# The paper's three bands (footnote 8): "scores <3: 'non-toxic', =3: 'ambiguous',
+# >3: 'toxic'". We call the first one "less toxic"; see backend/tasks/text.py.
+NUM_CLASSES = 3
+LESS_TOXIC, AMBIGUOUS, TOXIC = 0, 1, 2
 
 # The 13 canonical target groups, as they appear in the train split.
 CANONICAL_GROUPS = [
@@ -39,6 +42,8 @@ CANONICAL_GROUPS = [
 ]
 
 # Race/ethnicity groups — used only to pick demo samples, never to filter training data.
+CLASS_NAMES = {LESS_TOXIC: "less toxic", AMBIGUOUS: "ambiguous", TOXIC: "toxic"}
+
 RACE_GROUPS = [
     "black", "asian", "chinese", "latino", "mexican", "native_american", "middle_east",
 ]
@@ -109,14 +114,23 @@ def normalize_target_group(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def to_label(toxicity_human) -> int:
-    """`toxicity_human` (mean of 3 annotators, 1.0-5.0) -> 0-indexed class 0..4.
+def paper_score(toxicity_ai, toxicity_human) -> float:
+    """The score footnote 8 bins: max(HARMFULIFAI, HARMFULIFHUMAN), each a mean of 3
+    annotators on the 1-5 harm scale, so it moves in thirds (2.67, 3.0, 3.33, ...)."""
+    return max(float(toxicity_ai), float(toxicity_human))
 
-    Rounding discards the annotator disagreement encoded in the thirds (3.67 means
-    "two rated 4, one rated 3"). That is a deliberate simplification; see the soft-label
-    fallback in .omc/plans/toxigen-text-task.md (R-E) if the middle classes collapse.
+
+def to_label(score) -> int:
+    """Paper score -> class: <3 LESS_TOXIC, =3 AMBIGUOUS, >3 TOXIC.
+
+    The continuous score is cut directly, not rounded first: rounding would put 2.67 and
+    3.33 into "3" with the genuinely ambiguous 3.0, which is what the earlier 5-level
+    model did. The parquet stores thirds as 3.333333333, so "=3" needs a tolerance.
     """
-    return int(round(float(toxicity_human))) - 1
+    s = float(score)
+    if abs(s - 3.0) < 1e-3:
+        return AMBIGUOUS
+    return LESS_TOXIC if s < 3.0 else TOXIC
 
 
 def load_annotated(cache_dir: str = CACHE_DIR, normalize: bool = True):
@@ -126,7 +140,8 @@ def load_annotated(cache_dir: str = CACHE_DIR, normalize: bool = True):
         df = pd.read_parquet(_download(split, cache_dir))
         if normalize:
             df = normalize_target_group(df)
-        df["label"] = df["toxicity_human"].map(to_label)
+        df["paper_score"] = [paper_score(a, h) for a, h in zip(df["toxicity_ai"], df["toxicity_human"])]
+        df["label"] = df["paper_score"].map(to_label)
         frames.append(df)
     return frames[0], frames[1]
 
@@ -150,12 +165,15 @@ def _selftest() -> int:
     check(groups == set(CANONICAL_GROUPS), "groups are exactly the canonical 13")
 
     labels = pd.concat([train["label"], test["label"]])
-    check(labels.between(0, 4).all(), "labels are within 0..4")
-    dist = labels.value_counts(normalize=True).sort_index()
-    print("  class distribution (0-indexed):")
-    for k, v in dist.items():
-        print(f"    L{k+1}: {v*100:5.1f}%")
-    check(abs(dist.get(0, 0) - 0.352) < 0.01, "L1 share is ~35.2% (matches spec)")
+    check(labels.between(0, NUM_CLASSES - 1).all(), f"labels are within 0..{NUM_CLASSES - 1}")
+    counts = labels.value_counts().sort_index()
+    print("  class distribution:")
+    for k, v in counts.items():
+        print(f"    {CLASS_NAMES[k]:<10} {v:5d}  ({v / len(labels) * 100:5.1f}%)")
+    # 6,095 / 403 / 3,402 — measured on this dataset revision; a different count means
+    # the binning (or the data) changed.
+    check(counts.to_dict() == {0: 6095, 1: 403, 2: 3402},
+          f"paper bins give 6,095 / 403 / 3,402 (got {counts.to_dict()})")
 
     race = pd.concat([train, test])
     race = race[race["target_group"].isin(RACE_GROUPS)]

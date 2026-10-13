@@ -104,6 +104,20 @@ def request_cancel(job_id: str) -> bool:
         return True
 
 
+def settle_cancelled_job(job_id: str):
+    """Mark a cancelled job terminal. Whichever explainer it was in the middle of goes
+    back to "pending" — left as "running", the UI would keep pulsing it forever."""
+    with _lock:
+        job = _jobs.get(job_id)
+        if job is None:
+            return
+        for r in job["results"]:
+            if r["status"] == "running":
+                r["status"] = "pending"
+                r["current_step"] = None
+        job["status"] = "cancelled"
+
+
 def is_cancel_requested(job_id: str) -> bool:
     with _lock:
         job = _jobs.get(job_id)

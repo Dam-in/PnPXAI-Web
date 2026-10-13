@@ -605,6 +605,7 @@ export default function OptimizerPage() {
                   dataUrl={inputPreview ?? sourceDataUrl}
                   predictions={sourcePredictions ?? optResult.predictions}
                   task={optResult.task as TaskType}
+                  modelName={optResult.model_name}
                 />
 
                 <div className="grid grid-cols-2 gap-4">

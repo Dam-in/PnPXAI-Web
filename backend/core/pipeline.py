@@ -13,17 +13,29 @@ from backend.core.pnpxai_adapter import normalize_attribution, extract_metric_va
 from backend.core.job_manager import (
     get_uploaded_data, update_job_status, update_job_predictions, update_job_forecast,
     update_job_result, update_result_step, rank_completed_results, VISUALIZATION_DIR,
-    is_cancel_requested,
+    is_cancel_requested, settle_cancelled_job,
 )
 
-# Safety cap on how many pred_len-sized windows the Input & Prediction chart chains
+
+class _JobCancelled(Exception):
+    """Raised between the steps of an explainer once the job has been cancelled."""
+
+
+def _raise_if_cancelled(job_id: str) -> None:
+    # The explainer loop alone only noticed a cancel between explainers, so a click
+    # landing early in a slow one (LIME, four metrics) sat through all of it first.
+    # Checking between steps leaves just the single step in flight to wait out.
+    if is_cancel_requested(job_id):
+        raise _JobCancelled
+
+# Safety cap on how many pred_len-sized windows the Input & Result chart chains
 # together -- the chart shows the whole available back-test region (scrollable), so this
 # only guards against a pathological upload (e.g. tiny pred_len, huge file) rather than
 # reflecting any real UI limit. Windows are batched into one forward pass (see
 # `forecast_windows`), so even the full cap is a sub-second cost, not a per-window one.
 _MAX_BACKTEST_WINDOWS = 5000
 
-# How much of the uploaded series' tail counts as "test" for the Input & Prediction
+# How much of the uploaded series' tail counts as "test" for the Input & Result
 # chart -- a plain fraction rather than a fixed date, so it holds for any dataset
 # without needing to know an official train/val/test split. Skipped entirely below
 # _SMALL_DATASET_ROWS timesteps -- on a small upload, a 20% slice leaves too little to
@@ -313,7 +325,7 @@ def _run_ts_backtest(
     window_index: Optional[int] = None, data_name: Optional[str] = None,
 ) -> torch.Tensor:
     """Back-test a forecasting model against the tail of the uploaded series and record
-    the result for the Input & Prediction chart.
+    the result for the Input & Result chart.
 
     The horizon is a chain of non-overlapping `pred_len`-sized forecasts, capped to the
     most recent `_TEST_FRACTION` of the upload (falling back to the most recent
@@ -679,6 +691,7 @@ def run_explanation_pipeline(
                         break
 
                 # Compute attribution
+                _raise_if_cancelled(job_id)
                 update_result_step(job_id, exp_name, attribution_step)
                 if active_inp is not None:
                     # Use sliding window for large timeseries
@@ -724,6 +737,7 @@ def run_explanation_pipeline(
                 else:
                     metric_list = ["MuFidelity", "AbPC", "Sensitivity", "Complexity"]
                 for metric_name in metric_list:
+                    _raise_if_cancelled(job_id)
                     update_result_step(job_id, exp_name, _METRIC_LABELS[metric_name])
                     try:
                         metric_instance = _get_pnpxai_metric(metric_name, active_model, explainer_instance)
@@ -738,6 +752,7 @@ def run_explanation_pipeline(
                         metric_values[metric_name.lower()] = None
 
                 # Render visualization
+                _raise_if_cancelled(job_id)
                 update_result_step(job_id, exp_name, "Generating heatmap")
                 viz_path = os.path.join(job_dir, f"{exp_name}.png")
                 if tokens_for_viz:
@@ -773,6 +788,8 @@ def run_explanation_pipeline(
                 all_results.append(result_entry)
                 update_job_result(job_id, result_entry)
 
+            except _JobCancelled:
+                break
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -799,7 +816,10 @@ def run_explanation_pipeline(
         # .to() calls on the same module and corrupting CUDA state.
         end_job()
         job_ended = True
-        update_job_status(job_id, "cancelled" if is_cancel_requested(job_id) else "completed")
+        if is_cancel_requested(job_id):
+            settle_cancelled_job(job_id)
+        else:
+            update_job_status(job_id, "completed")
 
     except Exception as e:
         import traceback

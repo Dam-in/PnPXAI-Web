@@ -21,6 +21,9 @@ export function useExplainJob() {
   // even if their async steps (submit, first poll) resolve out of order.
   const generationRef = useRef(0);
   const jobIdRef = useRef<string | null>(null);
+  // Cancel clicked while the job is still being submitted: there is no id to cancel yet,
+  // so remember it and cancel as soon as the submit returns one.
+  const cancelPendingRef = useRef(false);
 
   const stopPolling = useCallback(() => {
     if (timerRef.current) {
@@ -32,6 +35,9 @@ export function useExplainJob() {
   const startJob = useCallback(
     async (task: TaskType, file: File | Blob, modelName: string, explainerNames: string[], rankingMetric: string, dataName?: string, tsWindowIndex?: number, useHpo: boolean = false) => {
       const myGeneration = ++generationRef.current;
+      // Clear the previous job's id, or a cancel during submit would go to that one.
+      jobIdRef.current = null;
+      cancelPendingRef.current = false;
       setLoading(true);
       setError(null);
       setJob(null);
@@ -41,6 +47,10 @@ export function useExplainJob() {
         const jobId = await submitExplainJob(task, file, modelName, explainerNames, rankingMetric, dataName, tsWindowIndex, useHpo);
         if (myGeneration !== generationRef.current) return;
         jobIdRef.current = jobId;
+        if (cancelPendingRef.current) {
+          cancelPendingRef.current = false;
+          cancelExplainJob(jobId).catch(() => {});
+        }
         startTimeRef.current = Date.now();
         maxPollTimeRef.current = useHpo ? MAX_POLL_TIME_HPO : MAX_POLL_TIME;
 
@@ -151,7 +161,10 @@ export function useExplainJob() {
   // then stops. The next poll (already ticking on POLL_INTERVAL) picks up the
   // "cancelled" status and results gathered so far — no local state to reconcile here.
   const cancelJob = useCallback(async () => {
-    if (!jobIdRef.current) return;
+    if (!jobIdRef.current) {
+      cancelPendingRef.current = true;
+      return;
+    }
     try {
       await cancelExplainJob(jobIdRef.current);
     } catch { /* best effort — next poll will still show whatever the job reaches */ }

@@ -13,23 +13,24 @@ const SAMPLE_INFO: Record<string, { desc: string; source: string; url?: string; 
   // aimed at a different racial or ethnic group. None of them contains a slur or a
   // profanity: ToxiGen is built around implicit toxicity, so the interesting question is
   // which ordinary-looking words the attribution picks out.
-  // Band names (non-toxic / ambiguous / toxic) are the paper's own, from its footnote 8:
-  // "scores <3: 'non-toxic', =3: 'ambiguous', >3: 'toxic'".
+  // The model's three classes are the paper's footnote-8 bands — "scores <3: 'non-toxic',
+  // =3: 'ambiguous', >3: 'toxic'" — except that the <3 band is called "less toxic":
+  // levels 1-2 are lower on the harm scale, not proven harmless.
   "toxigen_l1_mexican.txt": {
-    desc: "Level 1 — non-toxic, clearly benign. Pride in one's own culture, targeting nobody. Useful as the control: the attribution should have nothing strong to point at.",
+    desc: "Level 1 — less toxic, clearly benign. Pride in one's own culture, targeting nobody. Useful as the control: the attribution should have nothing strong to point at.",
     source: "ToxiGen (ACL 2022) — annotated split, target group: mexican",
     url: "https://huggingface.co/datasets/toxigen/toxigen-data",
     task: "text",
   },
   "toxigen_l2_chinese.txt": {
-    desc: "Level 2 — still non-toxic: rejecting a stereotype rather than making one. Mentions race explicitly, which is why a keyword-driven model tends to overrate it; watch whether the attribution keys on \"race\" alone.",
+    desc: "Level 2 — still less toxic: rejecting a stereotype rather than making one. Mentions race explicitly, which is why a keyword-driven model tends to overrate it; watch whether the attribution keys on \"race\" alone.",
     source: "ToxiGen (ACL 2022) — annotated split, target group: chinese",
     url: "https://huggingface.co/datasets/toxigen/toxigen-data",
     task: "text",
   },
-  "toxigen_l3_latino.txt": {
-    desc: "Level 3 — ambiguous, the paper's own name for the midpoint. A policy claim with no insult in it, which annotators split on. Whatever the attribution highlights here is the model's actual notion of borderline harm.",
-    source: "ToxiGen (ACL 2022) — annotated split, target group: latino",
+  "toxigen_l3_black.txt": {
+    desc: "Level 3 — ambiguous, the paper's own name for a score of exactly 3. No insult and no slur: it reads either as a defence of racism or as a jab at it, and annotators could not settle which. Held out from training. Whatever the attribution highlights here is the model's actual notion of borderline harm.",
+    source: "ToxiGen (ACL 2022) — annotated test split, target group: black",
     url: "https://huggingface.co/datasets/toxigen/toxigen-data",
     task: "text",
   },
@@ -68,12 +69,12 @@ interface Props {
 }
 
 // ToxiGen samples are named toxigen_l<level>_<target group>. They're labelled
-// "<toxicity>_<group>": levels 1-2 are non-toxic, 4-5 toxic, and 3 the paper's
-// "ambiguous" midpoint (its footnote 8), e.g. "NonToxic_Mexican", "Toxic_NativeAmerican".
+// "<toxicity>_<group>": levels 1-2 are less toxic, 4-5 toxic, and 3 the paper's
+// "ambiguous" midpoint (its footnote 8), e.g. "LessToxic_Mexican", "Toxic_NativeAmerican".
 const TOXIGEN_SAMPLE = /^toxigen_l(\d+)_(.+)$/;
 
 const toxicityLabel = (level: number) =>
-  level <= 2 ? "NonToxic" : level >= 4 ? "Toxic" : "Ambiguous";
+  level <= 2 ? "LessToxic" : level >= 4 ? "Toxic" : "Ambiguous";
 
 const pascalCase = (snake: string) =>
   snake.split("_").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join("");

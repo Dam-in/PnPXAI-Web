@@ -2,7 +2,7 @@
 
 Two independent checks, both required before the swap is considered good:
 
-  --collapse-check      the model still distinguishes the five severity levels
+  --collapse-check      the model still distinguishes the three toxicity bands
   --attribution-gate    its explanations are no worse than the outgoing model's
 
 Neither gate scores predictive accuracy. The spec makes attribution plausibility the
@@ -19,16 +19,17 @@ Exit code is non-zero when a requested gate fails.
 --- Why the thresholds are what they are -------------------------------------------
 
 collapse-check runs on the 940-row `annotated` test split, which training never sees.
-  (1) no class may take more than 60% of predictions. The true majority class is 35.2%,
-      so 60% is ~1.7x the base rate — a model that has stopped modelling the
+  The classes are the paper's footnote-8 bands (less toxic / ambiguous / toxic, see
+  toxigen_data.to_label), which on this split are 56.3% / 3.7% / 40.0%.
+  (1) no class may take more than 80% of predictions. The true majority class is 56.3%,
+      so 80% is ~1.4x the base rate — a model that has stopped modelling the
       distribution rather than one that is merely imperfect.
-  (2) every one of the 5 classes must be predicted at least once.
+  (2) every one of the 3 classes must be predicted at least once.
   (3) every class must reach a third of its true frequency. Condition (2) alone proved
-      useless in practice: the first trained model satisfied it while predicting L3 for
-      20 of 940 rows (2.1% against a true 13.1%) and L4 for 25 (2.7% against 15.7%) —
-      a 3-class model wearing a 5-class head. The demo shows one sample card per level,
-      so a level the model almost never emits is a broken demo no matter what the
-      aggregate accuracy says. (3) is the condition that actually bites.
+      useless in practice: the earlier 5-level model satisfied it while predicting L3
+      for 20 of 940 rows (2.1% against a true 13.1%). Here it is ambiguous, at 3.7%, that
+      is at risk — and the demo shows a sample card for it, so a band the model almost
+      never emits is a broken demo no matter what the aggregate accuracy says.
 
 attribution-gate compares AbPC against hatexplain-bert measured on *the same five
 sample texts* (see snapshot_baseline.py). Same inputs, same explainers, only the model
@@ -66,7 +67,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 MODEL_NAME = "toxigen-bert"
 BASELINE_PATH = os.path.join("backend", "tests", "data", "hatexplain_baseline_metrics.json")
 
-MAX_CLASS_SHARE = 0.60
+MAX_CLASS_SHARE = 0.80
 MIN_CLASS_SHARE_RATIO = 0.33
 MIN_MEAN_ABPC_DELTA = -0.10
 MAX_POSITIVE_EXPLAINER_DROP = 1
@@ -80,7 +81,7 @@ def collapse_check(model_name: str) -> bool:
     import torch
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
     from backend.core.model_paths import local_dir
-    from backend.scripts.toxigen_data import load_annotated, NUM_CLASSES
+    from backend.scripts.toxigen_data import load_annotated, NUM_CLASSES, CLASS_NAMES
 
     _train, test = load_annotated()
 
@@ -122,24 +123,22 @@ def collapse_check(model_name: str) -> bool:
     print("  predicted distribution:")
     for c in range(NUM_CLASSES):
         gold_share = float((gold == c).mean())
-        print(f"    L{c+1}: predicted {counts[c]:4d} ({shares[c]*100:5.1f}%)   true {gold_share*100:5.1f}%")
+        print(f"    {CLASS_NAMES[c]:<10} predicted {counts[c]:4d} ({shares[c]*100:5.1f}%)   true {gold_share*100:5.1f}%")
 
     worst = max(shares, key=lambda c: shares[c])
     cond1 = shares[worst] <= MAX_CLASS_SHARE
-    missing = [c + 1 for c in range(NUM_CLASSES) if counts[c] == 0]
+    missing = [CLASS_NAMES[c] for c in range(NUM_CLASSES) if counts[c] == 0]
     cond2 = not missing
 
-    # "At least once" turned out to be far too lenient: a model predicting L3 for 20 of
-    # 940 rows (2.1% against a true 13.1%) satisfies it while being, in effect, a 3-class
-    # model. The demo puts one sample card per level on screen, so a level the model
-    # almost never emits is a broken demo. Require each class to reach a third of its
-    # true frequency.
-    starved = [c + 1 for c in range(NUM_CLASSES)
+    # "At least once" turned out to be far too lenient (see the module docstring). The
+    # demo puts a sample card per band on screen, so a band the model almost never
+    # emits is a broken demo. Require each class to reach a third of its true frequency.
+    starved = [CLASS_NAMES[c] for c in range(NUM_CLASSES)
                if shares[c] < MIN_CLASS_SHARE_RATIO * float((gold == c).mean())]
     cond3 = not starved
 
     print(f"\n  [{'PASS' if cond1 else 'FAIL'}] no class exceeds {MAX_CLASS_SHARE*100:.0f}% "
-          f"(max is L{worst+1} at {shares[worst]*100:.1f}%)")
+          f"(max is {CLASS_NAMES[worst]} at {shares[worst]*100:.1f}%)")
     print(f"  [{'PASS' if cond2 else 'FAIL'}] every class predicted at least once"
           + ("" if cond2 else f" — never predicts: {missing}"))
     print(f"  [{'PASS' if cond3 else 'FAIL'}] every class reaches "
@@ -149,13 +148,14 @@ def collapse_check(model_name: str) -> bool:
     # Reported for the record; deliberately not gated (see module docstring).
     exact = float((preds == gold).mean())
     within1 = float((np.abs(preds - gold) <= 1).mean())
+    majority = max(float((gold == c).mean()) for c in range(NUM_CLASSES))
     print(f"\n  (not gated) exact accuracy {exact*100:.1f}%  |  within +-1 {within1*100:.1f}%"
-          f"  |  majority baseline 35.2%")
+          f"  |  majority baseline {majority*100:.1f}%")
     print("  (not gated) per-class recall:")
     for c in range(NUM_CLASSES):
         m = gold == c
         rec = float((preds[m] == c).mean()) if m.any() else float("nan")
-        print(f"    L{c+1}: {rec*100:5.1f}%  (n={int(m.sum())})")
+        print(f"    {CLASS_NAMES[c]:<10} {rec*100:5.1f}%  (n={int(m.sum())})")
 
     return cond1 and cond2 and cond3
 

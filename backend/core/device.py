@@ -21,6 +21,11 @@ import torch
 
 _device: torch.device | None = None
 _lock = threading.Lock()
+# Serializes every `.to()` on a tracked model. Request handlers load (and so move) the
+# same cached model from several executor threads at once — EXPLAIN fires /explainers
+# and /recommend in parallel — and two concurrent `.to()` calls on one module segfault
+# the process, as does one racing the idle offload below. Held only for the move.
+_move_lock = threading.Lock()
 _tracked: list = []          # weakrefs to modules currently moved onto the device
 _active_jobs = 0
 
@@ -52,7 +57,8 @@ def to_device(model):
     Safe to call on every load: `.to()` is a no-op when the model is already there.
     """
     device = get_device()
-    model = model.to(device)
+    with _move_lock:
+        model = model.to(device)
     if device.type == "cuda":
         with _lock:
             if not any(ref() is model for ref in _tracked):
@@ -66,13 +72,14 @@ def offload_models() -> None:
         return
     with _lock:
         refs, _tracked[:] = list(_tracked), []
-    for ref in refs:
-        model = ref()
-        if model is not None:
-            try:
-                model.to("cpu")
-            except Exception:
-                pass
+    with _move_lock:
+        for ref in refs:
+            model = ref()
+            if model is not None:
+                try:
+                    model.to("cpu")
+                except Exception:
+                    pass
     try:
         torch.cuda.empty_cache()
     except Exception:

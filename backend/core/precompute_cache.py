@@ -20,7 +20,7 @@ from typing import Optional
 
 from backend.core.job_manager import (
     VISUALIZATION_DIR, update_job_status, update_job_predictions,
-    update_job_result, rank_completed_results,
+    update_job_result, rank_completed_results, is_cancel_requested, settle_cancelled_job,
 )
 
 PRECOMPUTED_DIR = os.path.join("backend", "precomputed")
@@ -120,6 +120,16 @@ def is_fully_cached(cached: Optional[dict], explainer_names: list[str],
 STEP_DELAY_SECONDS = float(os.environ.get("PNPXAI_PRECOMPUTE_STEP_DELAY", "2.0"))
 
 
+def _sleep_unless_cancelled(job_id: str, seconds: float) -> bool:
+    """Sleep in short slices so a cancel cuts the pacing delay short. True if cancelled."""
+    deadline = time.monotonic() + seconds
+    while (left := deadline - time.monotonic()) > 0:
+        if is_cancel_requested(job_id):
+            return True
+        time.sleep(min(left, 0.1))
+    return is_cancel_requested(job_id)
+
+
 def serve_precomputed(
     job_id: str, task: str, model_name: str, file_hash: str,
     explainer_names: list[str], ranking_metric: str, cached: dict,
@@ -152,6 +162,9 @@ def _serve_precomputed(
     by_name = {r["explainer_name"]: r for r in cached.get("results", [])}
     entries = []
     for name in explainer_names:
+        # The pacing delay makes a cached run look live, so it has to stop like one too.
+        if is_cancel_requested(job_id):
+            break
         cached_r = by_name.get(name)
         if cached_r is None:
             continue
@@ -162,8 +175,8 @@ def _serve_precomputed(
             "status": "running",
             "current_step": "Explaining...",
         })
-        if STEP_DELAY_SECONDS:
-            time.sleep(STEP_DELAY_SECONDS)
+        if STEP_DELAY_SECONDS and _sleep_unless_cancelled(job_id, STEP_DELAY_SECONDS):
+            break
 
         if cached_r["status"] == "completed" and os.path.isdir(src_dir):
             for fname in os.listdir(src_dir):
@@ -190,4 +203,7 @@ def _serve_precomputed(
     for entry in entries:
         update_job_result(job_id, entry)
 
-    update_job_status(job_id, "completed")
+    if is_cancel_requested(job_id):
+        settle_cancelled_job(job_id)
+    else:
+        update_job_status(job_id, "completed")

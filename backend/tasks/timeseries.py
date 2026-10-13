@@ -21,7 +21,7 @@ class ITransformerWrapper(torch.nn.Module):
         target channel — so the classification-shaped explainer pipeline can attribute it
         ("which input timesteps drove the next value").
       * `forecast_horizon(context)` returns the whole (pred_len, channels) horizon for
-        the Input & Prediction chart.
+        the Input & Result chart.
 
     The architecture embeds each *variate* over the full time axis, so `seq_len` and
     `pred_len` are pinned by the weights while the channel count is free — the same

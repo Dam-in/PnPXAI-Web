@@ -1,27 +1,29 @@
-"""Fine-tune a 5-class toxicity-severity classifier on ToxiGen for the text task.
+"""Fine-tune a 3-class toxicity classifier on ToxiGen for the text task.
 
 Produces models/text/toxigen-bert/, which backend/tasks/text.py loads with
 local_files_only=True. This model does not exist on the Hub — it is built here — so
 download_models.py cannot supply it.
 
     python -m backend.scripts.train_toxigen
-    python -m backend.scripts.train_toxigen --soft-labels   # R-E fallback, see below
+    python -m backend.scripts.train_toxigen --class-weight inverse   # see below
 
 Design constraints (see .omc/plans/toxigen-text-task.md):
-  * Output stays a (batch, 5) logit tensor so backend/core/pipeline.py's existing
+  * Output stays a (batch, 3) logit tensor so backend/core/pipeline.py's existing
     softmax/argmax text path works unmodified. A regression or ordinal (CORAL) head
-    would break that, which is why the label is a rounded class and not a scalar.
+    would break that, which is why the label is a binned class and not a scalar.
   * Architecture stays BERT so pnpxai's explainer detection and the embedding-wrapper
     path in pipeline.py keep working.
   * Trained on all 13 target groups (9,900 rows). "Race-related" scopes the demo
     samples, not the training data.
 
-Label construction: `round(toxicity_human)`, where toxicity_human is the mean of 3
-annotators on the paper's 1-5 harm scale (1 = clearly benign, 5 = very offensive or
-abusive; the paper reads <3 as non-toxic, 3 as ambiguous, >3 as toxic). Rounding throws
-away the annotator disagreement encoded in the thirds. --soft-labels keeps it by
-splitting the mass across the two adjacent classes (3.67 -> L3 0.33 / L4 0.67) and
-training with KL; use it if the middle classes collapse (eval_toxigen --collapse-check).
+Label construction: the paper's own three bands (footnote 8), cut from the continuous
+score rather than from a rounded one — max(toxicity_ai, toxicity_human), each a mean of
+3 annotators on the 1-5 harm scale: <3 less toxic, =3 ambiguous, >3 toxic. See
+toxigen_data.to_label().
+
+Ambiguous is only ~4% of rows (6,095 / 403 / 3,402), so plain cross-entropy all but
+never predicts it. --class-weight scales the loss per class: "sqrt" (default) uses the
+square root of inverse frequency, "inverse" the full inverse, "none" turns it off.
 """
 import argparse
 import json
@@ -58,27 +60,22 @@ from backend.scripts.toxigen_data import load_annotated, NUM_CLASSES  # noqa: E4
 BASE_MODEL = "bert-base-uncased"
 OUT_NAME = "toxigen-bert"
 
-# Entirely the paper's own vocabulary: the endpoints from §4.1 ("1 being clearly benign
-# and 5 indicating very offensive or abusive text") and the band names from footnote 8,
-# which bins this scale as "scores <3: 'non-toxic', =3: 'ambiguous', >3: 'toxic'".
+# Footnote 8's band names — "scores <3: 'non-toxic', =3: 'ambiguous', >3: 'toxic'" —
+# except that the <3 band is called "LESS TOXIC" here, not "non-toxic".
 # Kept identical to _TEXT_MODELS["toxigen-bert"]["label_map"] in backend/tasks/text.py,
-# which is the authority the API actually reads; see that file for the caveat about
-# footnote 8 binning the max of two ratings where we use toxicity_human alone.
+# which is the authority the API actually reads.
 ID2LABEL = {
-    0: "1 — NON-TOXIC (clearly benign)",
-    1: "2 — NON-TOXIC",
-    2: "3 — AMBIGUOUS",
-    3: "4 — TOXIC",
-    4: "5 — TOXIC (very offensive or abusive)",
+    0: "LESS TOXIC",
+    1: "AMBIGUOUS",
+    2: "TOXIC",
 }
 
 
 class ToxiGenDataset(torch.utils.data.Dataset):
-    def __init__(self, texts, labels, tokenizer, max_length, soft=None):
+    def __init__(self, texts, labels, tokenizer, max_length):
         self.enc = tokenizer(list(texts), truncation=True, max_length=max_length,
                              padding="max_length", return_tensors="pt")
         self.labels = torch.tensor(list(labels), dtype=torch.long)
-        self.soft = None if soft is None else torch.tensor(np.asarray(soft), dtype=torch.float)
 
     def __len__(self):
         return len(self.labels)
@@ -86,46 +83,36 @@ class ToxiGenDataset(torch.utils.data.Dataset):
     def __getitem__(self, i):
         item = {k: v[i] for k, v in self.enc.items()}
         item["labels"] = self.labels[i]
-        if self.soft is not None:
-            item["soft_targets"] = self.soft[i]
         return item
 
 
-def soft_targets(toxicity_human: np.ndarray) -> np.ndarray:
-    """Spread each 1-5 mean across its two adjacent classes proportionally.
-
-    3.67 -> class index 2 gets 0.33, index 3 gets 0.67. An exact integer puts all mass
-    on one class, so this is a strict generalization of the rounded label.
-    """
-    x = np.clip(np.asarray(toxicity_human, dtype=float), 1.0, 5.0) - 1.0  # 0..4
-    lo = np.floor(x).astype(int)
-    hi = np.minimum(lo + 1, NUM_CLASSES - 1)
-    frac = x - lo
-    out = np.zeros((len(x), NUM_CLASSES), dtype=float)
-    rows = np.arange(len(x))
-    out[rows, lo] += 1.0 - frac
-    out[rows, hi] += frac
-    return out
+def class_weights(labels: np.ndarray, mode: str) -> torch.Tensor | None:
+    """Per-class loss weights, normalised so the average weight per example is 1."""
+    if mode == "none":
+        return None
+    counts = np.bincount(np.asarray(labels), minlength=NUM_CLASSES).astype(float)
+    w = 1.0 / counts
+    if mode == "sqrt":
+        w = np.sqrt(w)
+    w *= counts.sum() / (w * counts).sum()
+    return torch.tensor(w, dtype=torch.float)
 
 
-def _make_trainer_cls(use_soft: bool):
+def _make_trainer_cls(weights: torch.Tensor | None):
     from transformers import Trainer
 
-    if not use_soft:
+    if weights is None:
         return Trainer
 
-    class SoftLabelTrainer(Trainer):
+    class WeightedTrainer(Trainer):
         def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-            # Pop the soft targets before the forward pass: leaving `labels` in place
-            # would make the model compute its own cross-entropy, which we are replacing.
-            target = inputs.pop("soft_targets")
-            inputs.pop("labels", None)
+            labels = inputs.pop("labels")
             outputs = model(**inputs)
-            log_probs = F.log_softmax(outputs.logits, dim=-1)
-            loss = F.kl_div(log_probs, target, reduction="batchmean")
+            loss = F.cross_entropy(outputs.logits, labels,
+                                   weight=weights.to(outputs.logits.device))
             return (loss, outputs) if return_outputs else loss
 
-    return SoftLabelTrainer
+    return WeightedTrainer
 
 
 def compute_metrics(eval_pred):
@@ -152,8 +139,8 @@ def main() -> int:
     ap.add_argument("--gpus", default="0",
                     help="CUDA_VISIBLE_DEVICES to use; more than one enables DataParallel "
                          "and multiplies the effective batch size (see module docstring)")
-    ap.add_argument("--soft-labels", action="store_true",
-                    help="R-E fallback: KL against adjacent-class soft targets")
+    ap.add_argument("--class-weight", choices=["sqrt", "inverse", "none"], default="sqrt",
+                    help="per-class loss weighting against the rare ambiguous class")
     args = ap.parse_args()
 
     from sklearn.model_selection import train_test_split
@@ -175,8 +162,9 @@ def main() -> int:
           f"-> {n_dev} device(s); effective batch = {args.batch * max(n_dev, 1)}")
     print(f"[train] {len(tr)} train / {len(va)} val (held-out test: {len(_test_df)})")
     print(f"[train] class counts: {tr['label'].value_counts().sort_index().to_dict()}")
-    if args.soft_labels:
-        print("[train] SOFT LABELS enabled (KL over adjacent classes)")
+    weights = class_weights(tr["label"].values, args.class_weight)
+    print(f"[train] class weights ({args.class_weight}): "
+          f"{None if weights is None else [round(w, 3) for w in weights.tolist()]}")
 
     tokenizer = AutoTokenizer.from_pretrained(args.base)
     model = AutoModelForSequenceClassification.from_pretrained(
@@ -187,10 +175,8 @@ def main() -> int:
         output_attentions=False,  # sdpa attention rejects it, and text.py never asks for it
     )
 
-    ds_tr = ToxiGenDataset(tr["text"], tr["label"], tokenizer, args.max_length,
-                           soft=soft_targets(tr["toxicity_human"]) if args.soft_labels else None)
-    ds_va = ToxiGenDataset(va["text"], va["label"], tokenizer, args.max_length,
-                           soft=soft_targets(va["toxicity_human"]) if args.soft_labels else None)
+    ds_tr = ToxiGenDataset(tr["text"], tr["label"], tokenizer, args.max_length)
+    ds_va = ToxiGenDataset(va["text"], va["label"], tokenizer, args.max_length)
 
     dest = local_dir("text", args.out_name)
     work = str(dest) + ".work"
@@ -213,7 +199,7 @@ def main() -> int:
         report_to=[],
     )
 
-    trainer = _make_trainer_cls(args.soft_labels)(
+    trainer = _make_trainer_cls(weights)(
         model=model, args=targs, train_dataset=ds_tr, eval_dataset=ds_va,
         compute_metrics=compute_metrics,
     )
@@ -228,7 +214,8 @@ def main() -> int:
         json.dump({
             "base_model": args.base,
             "dataset": "toxigen/toxigen-data :: annotated (all 13 target groups)",
-            "label_rule": "soft(adjacent)" if args.soft_labels else "round(toxicity_human)",
+            "label_rule": "paper footnote 8: max(toxicity_ai, toxicity_human) <3 / =3 / >3",
+            "class_weight": args.class_weight,
             "n_train": len(tr), "n_val": len(va), "held_out_test": len(_test_df),
             "epochs": args.epochs, "lr": args.lr, "batch": args.batch,
             "max_length": args.max_length, "seed": args.seed,
