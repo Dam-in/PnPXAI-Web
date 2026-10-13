@@ -5,6 +5,7 @@ module.exports = {
     extend: {
       fontFamily: {
         sans: ["var(--font-freesentation)", "ui-sans-serif", "system-ui", "sans-serif"],
+        hand: ["var(--font-hand)", "cursive"],
       },
     },
   },

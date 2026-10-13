@@ -18,6 +18,14 @@ const freesentation = localFont({
   display: "swap",
 });
 
+// Handwritten face for the Text task's Input box (SIL OFL, Google Fonts). The Light
+// cut: the regular weight read too heavy at the box's size.
+const kalam = localFont({
+  src: [{ path: "./fonts/Kalam-Light.ttf", weight: "300", style: "normal" }],
+  variable: "--font-hand",
+  display: "swap",
+});
+
 export const metadata: Metadata = {
   title: "XAI Demo Platform",
   description: "Interactive eXplainable AI demo for image classification",
@@ -25,7 +33,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={freesentation.variable}>
+    <html lang="en" className={`${freesentation.variable} ${kalam.variable}`}>
       <body className="min-h-screen">{children}</body>
     </html>
   );

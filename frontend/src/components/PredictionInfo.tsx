@@ -587,7 +587,7 @@ export default function PredictionInfo({ dataUrl, predictions, forecast, task, m
               <RetryImage src={dataUrl} alt="Original" className="h-56 w-80 rounded-lg object-contain border bg-gray-50" />
             )}
             {task === "text" && (
-              <div className="max-h-40 w-full overflow-y-auto rounded-lg border bg-gray-50 p-2.5 text-sm text-gray-800">
+              <div className="max-h-40 w-full overflow-y-auto rounded-lg border bg-gray-50 p-2.5 font-hand font-light text-xl leading-snug text-gray-800">
                 {textContent || "Loading..."}
               </div>
             )}
