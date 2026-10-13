@@ -581,7 +581,7 @@ export default function PredictionInfo({ dataUrl, predictions, forecast, task, m
       <div className={`flex gap-4 ${task === "timeseries" && forecast ? "flex-col" : ""}`}>
         {/* Original data display */}
         {split && (task === "text" || dataUrl) && (
-          <div className={`space-y-1.5 ${task === "text" ? "w-1/2 min-w-0" : "flex-shrink-0"}`}>
+          <div className={`space-y-1.5 ${task === "text" ? "w-[58%] min-w-0" : "flex-shrink-0"}`}>
             <p className={SECTION_LABEL}>Input</p>
             {task === "image" && dataUrl && (
               <RetryImage src={dataUrl} alt="Original" className="h-56 w-80 rounded-lg object-contain border bg-gray-50" />
