@@ -139,8 +139,23 @@ frontend at it with `BACKEND_URL` in `frontend/.env.local` (default `http://loca
 From the repo root:
 
 ```bash
+<<<<<<< HEAD
 pip install -r backend/requirements.txt
 uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+=======
+docker run -d -it --name haeun_pnp --ipc=host \
+  --ulimit memlock=-1 --ulimit stack=67108864 \
+  -p 8001:8000 \
+  --device /dev/nvidiactl --device /dev/nvidia-uvm --device /dev/nvidia-uvm-tools \
+  --device /dev/nvidia0 \
+  -v /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro \
+  -v /usr/lib/x86_64-linux-gnu/libcuda.so.1:/usr/lib/x86_64-linux-gnu/libcuda.so.1:ro \
+  -v $(pwd):/project \
+  -v /data8/haeun/PnPXAI/models:/project/models \
+  -v /data8/haeun/PnPXAI/sample_data:/project/sample_data \
+  nvcr.io/nvidia/pytorch:23.07-py3
+# NOTE: add every /dev/nvidiaN and libnvidia-*.so / libcuda.so* your host exposes.
+>>>>>>> cb33701 (update README.md)
 ```
 
 Backend runs at http://localhost:8000. Model weights must be in `models/` first
