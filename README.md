@@ -3,7 +3,7 @@
 <img width="563" height="163" alt="image" src="https://github.com/user-attachments/assets/e07ecafa-5d7d-4827-ba5b-fc015625f3f7" />
 
 
-An interactive **Explainable AI (XAI)** demo platform supporting **Image Classification**, **Text Classification**, and **Time-Series Classification**.
+An interactive **Explainable AI (XAI)** demo platform supporting **Image Classification**, **Text Classification**, and **Time-Series Forecasting**.
 
 The platform enables users to upload data, select pre-trained models and XAI explainers, visualize attribution maps, and compare explanation quality using multiple evaluation metrics.
 
@@ -16,14 +16,27 @@ The platform enables users to upload data, select pre-trained models and XAI exp
 ### Image Classification
 - ResNet-50
 - VGG-16
-- DenseNet-121 (ImageNet)
+- DenseNet-121
+
+All three are torchvision ImageNet-pretrained models.
 
 ### Text Classification
-- BERT (HateXplain) — hate speech / normal / offensive
+- BERT (ToxiGen) — less toxic / ambiguous / toxic
 
-### Time-Series Classification
-- MOMENT (Large / Small)
-- InceptionTime
+Fine-tuned locally on ToxiGen (ACL 2022) with `backend/scripts/train_toxigen.py`. The
+three classes are the paper's own harm bands (<3, =3, >3 on the 1–5 annotator scale).
+
+### Time-Series Forecasting
+- iTransformer
+- TimesNet
+
+Each model has one checkpoint per sample dataset (ETTh1, illness); choosing the dataset
+selects the checkpoint trained on it. iTransformer runs on any channel count, while a
+TimesNet checkpoint only runs on the channel count it was trained with.
+
+### Custom Models
+Besides the presets, every task accepts a HuggingFace model ID or an uploaded weights
+file (up to 500MB, kept for 6 hours). The explainer list is then detected for that model.
 
 ---
 
@@ -31,65 +44,84 @@ The platform enables users to upload data, select pre-trained models and XAI exp
 
 The available explainers are automatically determined for each model using **PnPXAI's architecture detection**, ensuring that only compatible explainers are presented.
 
-| Model | Explainers |
-|---|---|
-| ResNet-50, VGG-16 | 14 — Gradient, Gradient×Input, SmoothGrad, VarGrad, IntegratedGradients, GradCAM, GuidedGradCAM, LRP ×4, RAP, LIME, KernelSHAP |
-| DenseNet-121 | 9 — the above minus LRP ×4 and RAP |
-| DistilBERT (text) | 8 — gradient family + LRP-Epsilon + LIME + KernelSHAP |
-| InceptionTime | 5 — gradient family |
-| MOMENT | 6 — gradient family + LRP-Epsilon |
+| Task | Model | Explainers |
+|---|---|---|
+| Image | ResNet-50, VGG-16 | 11 — Gradient, Gradient×Input, SmoothGrad, VarGrad, IntegratedGradients, GradCAM, GuidedGradCAM, LRP (Uniform Epsilon), RAP, LIME, KernelSHAP |
+| Image | DenseNet-121 | 9 — the above minus LRP and RAP |
+| Text | BERT (ToxiGen) | 8 — gradient family + LRP (Uniform Epsilon) + LIME + KernelSHAP |
+| Time-Series | iTransformer | 8 — gradient family + AttentionRollout + TransformerAttribution + LRP (Uniform Epsilon) |
+| Time-Series | TimesNet | 9 — gradient family + LRP ×4 (Uniform Epsilon, Epsilon+, Epsilon-γ-box, α2β1) |
+
+"Gradient family" = Gradient, Gradient×Input, SmoothGrad, VarGrad, IntegratedGradients.
 
 Detection can over-report: it recommends methods whose assumptions don't hold for the
 concrete model. Those are filtered out per model/modality, verified by actually running
 every sample × model × explainer combination:
 
-- **Concatenating architectures break zennit's LRP** — DenseNet's dense blocks and
-  InceptionTime's branch `torch.cat` both hit
+- **Concatenating architectures break zennit's LRP** — DenseNet's dense blocks hit
   `size of tensor a (32) must match tensor b (96)`.
 - **RAP** has no rule for `adaptive_avg_pool2d` (DenseNet) and fails on time-series.
-- **CAM** assumes 2D spatial feature maps, so it can't run on 1D-conv models.
+- **CAM** assumes 2D spatial feature maps, so it is excluded for time-series.
 - **LIME / KernelSHAP** fail on time-series inputs.
+- **Image shows one LRP variant only** — PnPXAI also recommends Epsilon+, Epsilon-γ-box
+  and α2β1, but only Uniform Epsilon is exposed for image models.
 
-> Note: the time-series models have **no trained classifier** — InceptionTime is randomly
-> initialized and MOMENT's classification head is too (only its backbone is pretrained).
-> They're there to demonstrate the XAI methods; their class predictions are not meaningful.
-> Initialization is seeded so results stay reproducible across restarts.
+Text uses the detected list as-is, with nothing filtered out.
+
+> Note: the time-series models are **forecasters**, not classifiers. The explained output is
+> the next predicted step of the target series (the last CSV column), so the attribution
+> shows which past timesteps drove that prediction.
 
 ### Evaluation Metrics
-- MuFidelity, AbPC, Sensitivity, Complexity
+| Task | Metrics |
+|---|---|
+| Image | MuFidelity, AbPC, Sensitivity, Complexity |
+| Text | AbPC, Sensitivity, Complexity |
+| Time-Series | Sensitivity, Complexity |
+
+- MuFidelity and AbPC are classification-only, so they are skipped for forecasters.
 - Results ranked by selected metric or average score
+
+### Hyperparameter Optimization (HPO)
+- Image and text only: optionally tune each explainer's hyperparameters and attribution
+  postprocessing (pooling + normalization) with Optuna before explaining
+  (AbPC, 20 trials, seed 42)
+- The UI shows an estimated run time first, from measured times in
+  `backend/precomputed/hpo_timing.json`
 
 ### Visualization
 - **Image**: Attribution heatmaps with side-by-side comparison
 - **Text**: Token-level attribution highlighting + bar chart
-- **Time-Series**: Cyan→magenta background attribution + signal overlay
+- **Time-Series**: White→red background attribution (magnitude) + signal overlay
+  - Input & forecast chart (context window + predicted horizon, chained back-test windows)
   - Multi-variate support (top variables ranked by importance)
-  - Sliding window attribution for large data (90K+ timesteps)
-  - Time axis labels (Day1 HH:MM format from CSV TIME column)
+  - Time axis labels from a date/TIME column
   - Expanded view (5×3 grid) + ZIP bundle download (Excel + per-variable PNGs)
 
 ### Data Handling
 - Sample data with dataset info & source links
-- Drag-and-drop upload (images up to 10MB, CSV up to 50MB)
-- Auto-detection of non-sensor columns (TIME → time axis, labels → prediction panel)
-- Boiler fault detection dataset (IEEE DataPort, 20 sensors × 90K timesteps)
-- ECG5000 heartbeat classification (UCR Archive)
+  - Image: `bird.jpg`, `cat.jpg`, `goldfish.JPEG`
+  - Text: five ToxiGen statements, one per annotator harm level (`toxigen_l1` … `toxigen_l5`)
+  - Time-Series: `ETTh1.csv`, `illness.csv`
+- Drag-and-drop upload (images up to 10MB, other data files up to 100MB)
+- Auto-detection of non-series columns (date/TIME → time axis, ID/index columns dropped)
 
 ### Optimizer Page
 - Hyperparameter optimization for XAI explainers
-- History tracking with result comparison
+- History tracking with result comparison (last 5 runs)
 
 ## Tech Stack
 
-- **Frontend**: Next.js 14 + TypeScript + Tailwind CSS (runs on the host)
+- **Frontend**: Next.js 14 + React 18 + TypeScript + Tailwind CSS (runs on the host, Node 20)
 - **Backend**: FastAPI + PyTorch + PnPXAI (runs inside a GPU Docker container)
-- **Time-Series Models**: MOMENT (AutonLab/MOMENT-1-large, MOMENT-1-small)
+- **Time-Series Models**: iTransformer, TimesNet (checkpoints trained per dataset)
 - **Metrics**: PnPXAI evaluator (MuFidelity, AbPC, Sensitivity, Complexity)
+- **HPO**: Optuna (via PnPXAI)
 
 ## Operating Model
 
 The **backend runs inside a GPU Docker container** — all Python dependencies
-(torch, transformers, pnpxai, momentfm, …) live in the container image, not on
+(torch, transformers, pnpxai, …) live in the container image, not on
 the host. The **frontend runs on the host** with Node and proxies API calls to
 the backend. Model weights are cached in a shared, mounted `models/` volume so
 they survive container recreation and are shared across containers.
@@ -116,7 +148,7 @@ in by bind-mounting the device nodes and driver libraries. Create the container
 (adjust name, host port, and mount paths for your setup):
 
 ```bash
-docker run -d -it --name haeun_pnp --ipc=host \
+docker run -d -it --name haeun_pnp --ipc=host --restart unless-stopped \
   --ulimit memlock=-1 --ulimit stack=67108864 \
   -p 8001:8000 \
   --device /dev/nvidiactl --device /dev/nvidia-uvm --device /dev/nvidia-uvm-tools \
@@ -130,8 +162,8 @@ docker run -d -it --name haeun_pnp --ipc=host \
 # NOTE: add every /dev/nvidiaN and libnvidia-*.so / libcuda.so* your host exposes.
 ```
 
-Install Python dependencies inside the container (pinned versions; `momentfm`
-must be `--no-deps`; `setuptools` must stay `<81` so `pkg_resources` survives):
+Install Python dependencies inside the container (pinned versions; `setuptools`
+must stay `<81` so `pkg_resources` survives):
 
 ```bash
 docker exec haeun_pnp pip install \
@@ -139,15 +171,17 @@ docker exec haeun_pnp pip install \
   transformers==5.14.0 huggingface_hub==1.23.0 tokenizers==0.22.2 safetensors==0.8.0 \
   pnpxai==0.1.4 captum==0.9.0 \
   fastapi==0.139.0 uvicorn==0.51.0 python-multipart==0.0.32 matplotlib==3.7.2 openpyxl \
-  aeon==1.3.0 soxr==1.1.0 pandas==2.3.3 setuptools==80.10.2
-docker exec haeun_pnp pip install momentfm==0.1.4 --no-deps
+  soxr==1.1.0 pandas==2.3.3 setuptools==80.10.2
 ```
 
-Download the models into the shared `models/` volume (one time; see
-[Model Storage](#model-storage)):
+Populate the shared `models/` volume (one time; see [Model Storage](#model-storage)):
 
 ```bash
-docker exec -w /project haeun_pnp python -m backend.scripts.download_models
+# image models (torchvision ImageNet weights)
+docker exec -w /project haeun_pnp python -m backend.scripts.download_models --only image
+# text model — fine-tuned on ToxiGen here; it does not exist on any hub
+docker exec -w /project haeun_pnp python -m backend.scripts.train_toxigen
+# time-series checkpoints are not downloaded: place the trained .pth files in models/timeseries/
 ```
 
 Run the backend.
@@ -193,13 +227,13 @@ XAI results for the built-in sample data can be precomputed so `/explain` serves
 identical request instantly instead of recomputing:
 
 ```bash
-docker run \
-    --gpus all \
-    -it \
-    -p 8000:8000 \
-    -v $(pwd)/models:/project/models \
-    pnpxai-demo
+docker exec -w /project haeun_pnp python -m backend.scripts.precompute_samples [task ...] [--force]
 ```
+
+- With no task names it precomputes **image and text only**; pass `timeseries` to include it.
+- Image and text samples are precomputed **with HPO**, and the measured HPO times are
+  written to `backend/precomputed/hpo_timing.json` (used for the HPO time estimate).
+- Split across GPUs with one process per GPU: `CUDA_VISIBLE_DEVICES=2 … --shard 0/2`.
 
 - Cache lives in `backend/precomputed/` and is **git-ignored** — regenerate after cloning.
 - Matched by **file SHA-256 + model name**, so it only hits when the uploaded file is
@@ -260,15 +294,27 @@ Model weights are cached locally instead of relying on the ephemeral
 - **Location**: `$PNPXAI_MODEL_DIR`, else `<repo>/models` — which resolves to the
   mounted `/project/models` volume in the container (shared across containers,
   survives recreation). Resolved by `backend/core/model_paths.py`.
-- **Populate**: `python -m backend.scripts.download_models [--only text image timeseries]`
-- **Layout**: `models/text/hatexplain-bert/` (transformers), `models/image/*.pth`
-  (torchvision state_dicts), `models/timeseries/moment-{large,small}/` (HF snapshot).
-  Simple-CNN and InceptionTime are randomly initialized in code — nothing to download.
-- **Loading**: handlers load from this directory with `local_files_only=True` when
-  present (offline-capable), and **fall back to the HuggingFace Hub / torchvision**
-  when absent — so a fresh deployment works before the download script is run.
-- Weights are git-ignored (`models/.gitignore`); re-run the download script on a new
-  deployment.
+- **Layout**:
+
+  ```
+  models/
+    image/resnet50.pth, vgg16.pth, densenet121.pth   (torchvision state_dicts)
+    text/toxigen-bert/                               (transformers save_pretrained)
+    timeseries/iTransformer_etth1.pth, iTransformer_illness.pth,
+               timesnet_etth1.pth, timesnet_illness.pth
+  ```
+
+- **Populate**:
+  - Image: `python -m backend.scripts.download_models --only image`
+  - Text: `python -m backend.scripts.train_toxigen` — the model is fine-tuned here and
+    exists on no hub. (`download_models --only text` fetches `hatexplain-bert`, a retired
+    preset kept only as the baseline for `backend/scripts/eval_toxigen.py`.)
+  - Time-Series: trained checkpoints are placed in `models/timeseries/` by hand.
+- **Loading**: handlers load from this directory with `local_files_only=True`
+  (offline-capable). Image models **fall back to torchvision** when absent; the text and
+  time-series presets have no remote fallback and fail with a message naming the
+  missing path.
+- Weights are git-ignored (`models/.gitignore`); repopulate on a new deployment.
 
 ## Architecture
 
@@ -305,11 +351,26 @@ Frontend Visualization
 |---------|----------|-------------|
 | GET | `/api/tasks` | Supported tasks |
 | GET | `/api/models` | Supported models |
-| GET | `/api/explainers` | Supported explainers |
-| POST | `/api/explain` | Run explanation |
+| GET | `/api/explainers` | Supported explainers (detected per model) |
+| GET | `/api/recommend` | Detected architectures + recommended explainers |
+| GET | `/api/samples/{task}` | Sample data list |
+| GET | `/api/samples/{task}/{filename}` | Sample data file |
+| GET | `/api/validate-model` | Validate a HuggingFace model ID (or checkpoint URL for time-series) |
+| POST | `/api/upload-model` | Upload model weights |
+| GET | `/api/hpo/estimate` | Estimated HPO run time |
+| POST | `/api/explain` | Run explanation (async job) |
 | GET | `/api/jobs/{id}` | Job status |
+| POST | `/api/jobs/{id}/cancel` | Cancel a job |
 | GET | `/api/jobs/{id}/visualizations/{name}` | Visualization |
+| GET | `/api/jobs/{id}/original/{name}` | Original input data (image / text / CSV) |
+| POST | `/api/detect-rank` | Start explainer detection + ranking job |
+| GET | `/api/detect-rank/{id}` | Detection + ranking job status |
+| GET | `/api/optimizer/params/{explainer}` | Tunable parameters of an explainer |
 | POST | `/api/optimizer/optimize` | Hyperparameter optimization |
+| POST | `/api/optimizer/custom` | Run with custom parameters |
+| GET | `/api/optimizer/history` | Optimizer history |
+| GET / DELETE | `/api/optimizer/history/{id}` | Get / delete a history record |
+| POST | `/api/optimizer/history/{id}/custom` | Re-run a history record with custom parameters |
 
 ---
 
@@ -317,14 +378,20 @@ Frontend Visualization
 
 ```
 backend/
-    api/
-    core/
-    models/
-    tasks/
-    scripts/
+    api/          REST routes + schemas
+    core/         pipeline, explainer detection, HPO, jobs, precompute cache
+    models/       iTransformer / TimesNet implementations
+    tasks/        per-task handlers (image, text, timeseries)
+    renderers/    heatmap / token / time-series rendering
+    optimizer/    Optimizer page service
+    scripts/      model download, ToxiGen training, sample precompute
+    tests/
 
 frontend/
-    src/
+    src/app/         pages (main, /optimizer)
+    src/components/
+    src/hooks/
+    src/lib/         API client, types
     public/
 
 models/
@@ -338,8 +405,6 @@ sample_data/
 
 - The backend runs in the container only — the host has no torch/transformers, so
   code can be edited on the host but must be **run/tested inside the container**.
-- MOMENT models require the `momentfm` package (install with `--no-deps` — its pins
-  otherwise conflict with the newer transformers/huggingface_hub used here).
 - Keep `setuptools<81` in the container: newer setuptools removes `pkg_resources`,
   which breaks the librosa → transformers audio import chain.
 - Files written into mounted volumes by the container are owned by `root`; fix with
