@@ -140,6 +140,7 @@ From the repo root:
 
 ```bash
 <<<<<<< HEAD
+<<<<<<< HEAD
 pip install -r backend/requirements.txt
 uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 =======
@@ -156,6 +157,10 @@ docker run -d -it --name haeun_pnp --ipc=host \
   nvcr.io/nvidia/pytorch:23.07-py3
 # NOTE: add every /dev/nvidiaN and libnvidia-*.so / libcuda.so* your host exposes.
 >>>>>>> cb33701 (update README.md)
+=======
+pip install -r backend/requirements.txt
+uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+>>>>>>> 1f46732 (update README.md)
 ```
 
 Backend runs at http://localhost:8000. Model weights must be in `models/` first

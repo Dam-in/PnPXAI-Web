@@ -1,15 +1,43 @@
-fastapi>=0.104
-uvicorn>=0.24
-torch>=2.4
-torchvision>=0.19
-pnpxai>=0.1.4
-pillow>=10.0
-numpy>=1.24
-matplotlib>=3.8
-python-multipart>=0.0.6
-pandas>=2.0
-openpyxl>=3.1
-transformers>=4.36
-soxr
-scikit-learn>=1.3
-momentfm>=0.1
+# Backend dependencies, pinned to the versions the backend is run and tested with
+# (Python 3.10).
+#   pip install -r backend/requirements.txt
+#
+# torch / torchvision: pick the build matching your CUDA driver from
+# https://pytorch.org/get-started/locally/ (tested with the cu130 build).
+
+# Web server
+fastapi==0.139.0
+uvicorn==0.51.0
+python-multipart==0.0.32
+
+# ML
+torch==2.13.0
+torchvision==0.28.0
+transformers==5.14.0
+huggingface_hub==1.23.0
+tokenizers==0.22.2
+safetensors==0.8.0
+
+# XAI (pnpxai also pulls in zennit, optuna, scikit-learn, ...)
+pnpxai==0.1.4
+captum==0.9.0
+optuna==4.9.0
+
+# Data / rendering
+numpy==2.2.6
+pandas==2.3.3
+pillow==12.3.0
+matplotlib==3.10.9
+openpyxl==3.1.5
+
+# ToxiGen training script (backend/scripts/train_toxigen.py)
+scikit-learn==1.7.2
+pyarrow==25.0.0
+
+# Keeps the transformers audio import chain working
+soxr==1.1.0
+# Must stay <81: newer setuptools removes pkg_resources
+setuptools==80.10.2
+
+# Tests
+pytest==7.4.0
