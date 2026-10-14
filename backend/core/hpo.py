@@ -2,7 +2,7 @@
 
 Tunes an explainer's hyperparameters together with its attribution postprocessor
 (pooling + normalization) with Optuna, the same Objective the Optimizer page uses.
-Image task only for now.
+Image and text tasks.
 
 Measured HPO run times are stored in backend/precomputed/hpo_timing.json (written by
 backend/scripts/precompute_samples.py) so the UI can tell a user roughly how long an
@@ -26,27 +26,69 @@ _FALLBACK_SECONDS = 60.0
 _timing_lock = threading.Lock()
 
 
+class _TokenBroadcastMetric:
+    """Lets a metric score token-level attributions against embedding inputs.
+
+    Text gradient explainers run on (B, L, D) embeddings, but the text postprocessor
+    pools them to one score per token, (B, L). The metric perturbs the inputs by those
+    scores, so each token's score is repeated across its D embedding dims — the whole
+    token is flipped at once, which is what a token-level attribution means.
+    """
+    def __init__(self, metric):
+        self.metric = metric
+
+    def set_explainer(self, explainer):
+        return _TokenBroadcastMetric(self.metric.set_explainer(explainer))
+
+    def evaluate(self, inputs, targets, attributions):
+        return self.metric.evaluate(inputs, targets, broadcast_to_tokens(attributions, inputs))
+
+
+def broadcast_to_tokens(attributions, inputs):
+    """(B, L) token scores -> (B, L, D) to match embedding inputs; anything else as-is."""
+    if attributions.dim() == inputs.dim() - 1:
+        return attributions.unsqueeze(-1).expand_as(inputs)
+    return attributions
+
+
+def _modality_for(task: str, inputs, mask_token_id: Optional[int]):
+    from pnpxai.core.modality.modality import ImageModality, TextModality
+    if task != "text":
+        # Use ImageModality directly to avoid torch.fx tracing issues with some models
+        return ImageModality()
+    if not inputs.is_floating_point():
+        # LIME / KernelSHAP on token ids: baselines replace tokens with the mask token.
+        return TextModality(mask_token_id=mask_token_id or 0)
+    # Gradient explainers on embeddings. Text's only baseline ('token') fills the input
+    # with a token *id*, which as an embedding vector is meaningless — use zeros, the
+    # same baseline the default (non-HPO) run gets.
+    from pnpxai.explainers.utils.baselines import ZeroBaselineFunction
+    from pnpxai.explainers.utils.function_selectors import FunctionSelector
+    return TextModality(baseline_fn_selector=FunctionSelector({"zeros": ZeroBaselineFunction}))
+
+
 def tune_explainer(explainer, model, inputs, targets,
                    metric_name: str = HPO_METRIC, n_trials: int = HPO_N_TRIALS,
-                   should_stop=None):
+                   should_stop=None, task: str = "image", mask_token_id: Optional[int] = None):
     """Run Optuna over the explainer's and postprocessor's tunable params.
 
     `should_stop()` is checked after every trial (e.g. job cancellation).
+    For text, `mask_token_id` is the tokenizer's mask token (LIME/KernelSHAP baseline).
     Returns (best_explainer, best_postprocessor, best_params, best_value).
     Raises if no trial completed.
     """
     import optuna
-    from pnpxai.core.modality.modality import ImageModality
     from pnpxai.evaluator.optimizer.objectives import Objective
     from pnpxai.evaluator.optimizer.utils import load_sampler
     from backend.core.pipeline import _get_pnpxai_metric
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-    # Use ImageModality directly to avoid torch.fx tracing issues with some models
-    modality = ImageModality()
+    modality = _modality_for(task, inputs, mask_token_id)
     postprocessor = modality.get_default_postprocessors()[0]
     metric = _get_pnpxai_metric(metric_name, model, explainer)
+    if task == "text":
+        metric = _TokenBroadcastMetric(metric)
 
     objective = Objective(
         explainer=explainer,
@@ -62,7 +104,11 @@ def tune_explainer(explainer, model, inputs, targets,
         if should_stop is not None and should_stop():
             study.stop()
 
-    study.optimize(objective, n_trials=n_trials, n_jobs=1, callbacks=[_stop_cb])
+    # Text: LRP's epsilon search hits values zennit can't run (~1 in 3 trials). Skip
+    # those trials rather than abandoning the whole search. Image keeps the old
+    # fail-fast behaviour its precomputed results were produced with.
+    catch = (Exception,) if task == "text" else ()
+    study.optimize(objective, n_trials=n_trials, n_jobs=1, callbacks=[_stop_cb], catch=catch)
 
     best = study.best_trial  # raises ValueError if every trial failed
     return (

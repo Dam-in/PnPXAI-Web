@@ -14,7 +14,7 @@ function formatEstimate(seconds: number | null | undefined): string {
   return `약 ${minutes}분 소요`;
 }
 
-// Shown on EXPLAIN for a user's own image: run with default hyperparameters (fast) or
+// Shown on EXPLAIN for a user's own image or text: run with default hyperparameters (fast) or
 // tune each explainer's hyperparameters first (HPO, slower but better-scoring maps).
 export default function HpoChoiceModal({ estimateSeconds, onChoose, onClose }: Props) {
   return (

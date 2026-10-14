@@ -581,8 +581,13 @@ def run_explanation_pipeline(
                 input_tensor = input_data if isinstance(input_data, torch.Tensor) else None
                 target_class = 0
 
-        # HPO tunes each explainer (+ its postprocessor) before explaining. Image only.
-        use_hpo = bool(params.get("use_hpo")) and task == "image"
+        # HPO tunes each explainer (+ its postprocessor) before explaining. Image and text.
+        use_hpo = bool(params.get("use_hpo")) and task in ("image", "text")
+        # Text HPO baselines (LIME/KernelSHAP) swap tokens for the tokenizer's mask token.
+        hpo_mask_token_id = None
+        if use_hpo and task == "text":
+            tok = handler.get_tokenizer(model_name)
+            hpo_mask_token_id = tok.mask_token_id if tok.mask_token_id is not None else tok.pad_token_id
 
         # For each explainer: attribution + metrics + visualization
         job_dir = os.path.join(VISUALIZATION_DIR, job_id)
@@ -683,6 +688,7 @@ def run_explanation_pipeline(
                         explainer_instance, hpo_postprocessor, hpo_params, _ = tune_explainer(
                             explainer_instance, active_model, active_inp, target_tensor,
                             should_stop=lambda: is_cancel_requested(job_id),
+                            task=task, mask_token_id=hpo_mask_token_id,
                         )
                     except Exception as e:
                         print(f"[{exp_name}] HPO failed, using default params: {type(e).__name__}: {e}")
@@ -707,7 +713,16 @@ def run_explanation_pipeline(
                             attribution_raw = explainer_instance.attribute(active_inp, target_tensor)
                         except TypeError:
                             attribution_raw = explainer_instance.attribute(inputs=active_inp, targets=target_tensor)
-                    if hpo_postprocessor is not None:
+                    if hpo_postprocessor is not None and task == "text":
+                        # Text: the postprocessor pools to one score per token, (B, L).
+                        # Metrics perturb the inputs, which for gradient explainers are
+                        # (B, L, D) embeddings — repeat each token's score across D, as
+                        # HPO did when it scored the trials.
+                        from backend.core.hpo import broadcast_to_tokens
+                        pooled = hpo_postprocessor(attribution_raw).detach()
+                        attribution = normalize_attribution(pooled, task=task)
+                        attribution_raw = broadcast_to_tokens(pooled, active_inp)
+                    elif hpo_postprocessor is not None:
                         # Metrics score the postprocessed (B, H, W) map, as HPO did.
                         # Add a channel dim so normalize_attribution reads it as an image.
                         attribution_raw = hpo_postprocessor(attribution_raw).detach()

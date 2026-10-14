@@ -66,13 +66,13 @@ async def explain(
         None, description="Time-series only: re-anchor the backtest so this chained "
                            "window's context is what's explained (a chart window click)."
     ),
-    use_hpo: bool = Query(False, description="Image only: tune each explainer's hyperparameters (HPO) before explaining"),
+    use_hpo: bool = Query(False, description="Image/text only: tune each explainer's hyperparameters (HPO) before explaining"),
     file: UploadFile = File(...),
 ):
     contents = await file.read()
     if len(contents) > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="File too large. Maximum size is 10MB.")
-    use_hpo = use_hpo and task == "image"
+    use_hpo = use_hpo and task in ("image", "text")
 
     # Validate task
     try:

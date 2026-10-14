@@ -154,11 +154,12 @@ export default function Home() {
     resetAll();
   };
 
-  // Image samples always show HPO-tuned results (precomputed). A user's own image asks
-  // first: default hyperparameters (fast) or HPO (slow). Other tasks run with defaults.
+  // Image and text samples always show HPO-tuned results (precomputed). A user's own
+  // image/text asks first: default hyperparameters (fast) or HPO (slow). Time-series
+  // has no HPO and runs with defaults.
   const handleExplain = async () => {
     if (!task || !model || !inputData) return;
-    if (task !== "image") return runExplain(false);
+    if (task === "timeseries") return runExplain(false);
     if (dataName) return runExplain(true);
 
     setHpoChoice({ estimate: undefined });

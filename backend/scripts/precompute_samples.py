@@ -15,8 +15,8 @@ each entry records the CACHE_VERSION and a fingerprint of the model's weights, s
 changing a model (retrain / re-architect / re-init) or bumping CACHE_VERSION makes stale
 entries recompute automatically. `--force` recomputes regardless.
 
-Image samples are precomputed with HPO (each explainer's hyperparameters tuned by
-backend/core/hpo.py), since that's what the UI shows for its own image samples. The
+Image and text samples are precomputed with HPO (each explainer's hyperparameters tuned
+by backend/core/hpo.py), since that's what the UI shows for its own samples. The
 measured HPO times go to backend/precomputed/hpo_timing.json and back the run-time
 estimate shown before an HPO run on a user's own image.
 
@@ -52,7 +52,7 @@ SAMPLE_ROOT = "sample_data"
 DEFAULT_TASKS = ["image", "text"]
 ALL_TASKS = ["image", "text", "timeseries"]
 # Tasks whose samples are served with HPO-tuned results
-HPO_TASKS = {"image"}
+HPO_TASKS = {"image", "text"}
 
 
 def _sample_files(task: str) -> list[str]:

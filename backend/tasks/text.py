@@ -151,11 +151,13 @@ class TextTaskHandler(TaskHandler):
             return _load_hf_text_model(model_name).get("label_map", {})
         return _TEXT_MODELS.get(model_name, {}).get("label_map", {})
 
-    def tokenize(self, text: str, model_name: str):
+    def get_tokenizer(self, model_name: str):
         if not _is_preset(model_name):
-            tokenizer = _load_hf_text_model(model_name)["tokenizer"]
-        else:
-            tokenizer = _get_tokenizer(model_name)
+            return _load_hf_text_model(model_name)["tokenizer"]
+        return _get_tokenizer(model_name)
+
+    def tokenize(self, text: str, model_name: str):
+        tokenizer = self.get_tokenizer(model_name)
         encoded = tokenizer(text, return_tensors="pt", truncation=True, max_length=128, padding=True)
         tokens = tokenizer.convert_ids_to_tokens(encoded["input_ids"][0])
         return encoded, tokens
