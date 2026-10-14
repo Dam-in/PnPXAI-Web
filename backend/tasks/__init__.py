@@ -20,5 +20,5 @@ def list_tasks() -> list[dict]:
     return [
         {"name": "image", "display_name": "Image Classification", "description": "Explain image classification models with heatmap visualizations"},
         {"name": "text", "display_name": "Text Classification", "description": "Explain text classification models with token-level attribution"},
-        {"name": "timeseries", "display_name": "Time-Series Classification", "description": "Explain time-series classification models with temporal attribution"},
+        {"name": "timeseries", "display_name": "Time-Series", "description": "Explain time-series models with temporal attribution"},
     ]
